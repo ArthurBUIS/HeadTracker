@@ -111,10 +111,17 @@ frame: each slot's smoother EMAs toward its target and draws the crop.
   the tracker's `maxMisses = round(trackCoastSeconds / interval)` (default
   coast 2 s) on start and on every interval change, so faster detection
   doesn't shorten the grace before a stream closes.
-- **`minHits` / `maxMisses` gate flicker vs latency.** Default `minHits: 2`
-  ⇒ a stream appears on the 2nd consecutive detection (~2 s); `maxMisses: 2`
-  ⇒ a participant may vanish ~4 s (turned away / occluded) before their
-  stream closes. Ids are **never reused** after death.
+- **`minHits` gates flicker vs latency.** Default `minHits: 2` ⇒ a stream
+  appears on the 2nd consecutive detection. Ids are **never reused** after
+  death.
+- **Lost heads freeze, they don't cut.** When the tracker drops an id the
+  engine marks its slot `lost` rather than removing it: the stream stays
+  alive frozen on the last crop (`onHeadStreamLost`), and a return within
+  `lostStreamLingerSeconds` (30) resumes the SAME stream/canvas seamlessly
+  (`onHeadStreamResumed`) — pairs with gallery re-ID so a returning person
+  reclaims both id and stream. Only after lingering out is `removeSlot` /
+  `onHeadStreamRemoved` fired. The linger timeout is counted in the render
+  loop via accumulated rAF dt.
 - **head box → crop.** `headCrop` adds framing via `paddingFactor` (2.0) then
   resamples the square source region to 200×200, so near and far heads are
   framed consistently. Set `paddingFactor` to 1 for a literal fixed-size crop.

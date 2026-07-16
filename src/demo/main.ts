@@ -65,11 +65,20 @@ function addTile(id: number, stream: MediaStream): void {
   const label = document.createElement('div');
   label.className = 'tile-label';
   label.textContent = `head #${id}`;
+  label.dataset.id = String(id);
 
   tile.appendChild(video);
   tile.appendChild(label);
   gridEl.appendChild(tile);
   tileById.set(id, tile);
+}
+
+function setTileLost(id: number, lost: boolean): void {
+  const tile = tileById.get(id);
+  if (!tile) return;
+  tile.classList.toggle('lost', lost);
+  const label = tile.querySelector('.tile-label');
+  if (label) label.textContent = lost ? `head #${id} (lost)` : `head #${id}`;
 }
 
 function removeTile(id: number): void {
@@ -118,6 +127,8 @@ function startEngineOnSource(): void {
         addTile(id, stream);
         setStatus(`Tracking ${tileById.size} head(s).`);
       },
+      onHeadStreamLost: (id) => setTileLost(id, true),
+      onHeadStreamResumed: (id) => setTileLost(id, false),
       onHeadStreamRemoved: (id) => {
         removeTile(id);
         setStatus(`Tracking ${tileById.size} head(s).`);

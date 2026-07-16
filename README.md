@@ -47,6 +47,15 @@ their number. Lost ids linger for `reidMemorySeconds` (default 30 s). All
 verified headless, including the contrast case (re-ID off → new id) and that
 two differently-dressed people are never merged.
 
+### Losing and regaining a head
+
+When a head is lost, the stream is **not** cut — it's kept alive, frozen on
+the head's last position (an unmoving camera on that spot), and the tile is
+greyed out and labelled "(lost)". If the person comes back within
+`lostStreamLingerSeconds` (default 30 s) the same stream **resumes
+seamlessly** — no flicker, no new id — reusing the gallery re-ID above. Only
+after lingering that long with no return is the stream finally stopped.
+
 ### Detection model
 
 The active detector is **coco-ssd** (`@tensorflow-models/coco-ssd` on tfjs —

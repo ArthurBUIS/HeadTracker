@@ -97,6 +97,15 @@
         object-fit: cover;
         display: block;
       }
+      .tile.lost {
+        outline: 2px dashed #e0a800;
+      }
+      .tile.lost video {
+        filter: grayscale(0.85) brightness(0.7);
+      }
+      .tile.lost .tile-label {
+        background: #b8860baa;
+      }
       .tile-label {
         position: absolute;
         left: 6px;

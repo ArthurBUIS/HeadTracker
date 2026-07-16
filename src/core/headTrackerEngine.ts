@@ -74,6 +74,13 @@ export interface HeadTrackerEngineConfig {
    * tracker gallery rounds using the current interval.
    */
   reidMemorySeconds: number;
+  /**
+   * When a head is lost, its stream is kept alive frozen on the last crop
+   * for this many seconds (so a brief loss doesn't blank it and a return
+   * resumes it seamlessly) before it's finally stopped. Aligns with
+   * `reidMemorySeconds` by default so re-ID can revive it while it lingers.
+   */
+  lostStreamLingerSeconds: number;
   /** Frame rate requested from each output canvas's captureStream. */
   outputFps: number;
   tracker: Partial<TrackerConfig>;
@@ -90,6 +97,7 @@ export const DEFAULT_ENGINE_CONFIG: HeadTrackerEngineConfig = {
   trackCoastSeconds: 2.0,
   appearanceReid: true,
   reidMemorySeconds: 30,
+  lostStreamLingerSeconds: 30,
   outputFps: 30,
   tracker: DEFAULT_TRACKER_CONFIG,
   crop: {},
@@ -98,7 +106,15 @@ export const DEFAULT_ENGINE_CONFIG: HeadTrackerEngineConfig = {
 export interface HeadTrackerCallbacks {
   /** A newly-confirmed participant got a stream. Mount it. */
   onHeadStreamAdded?: (head: HeadStream) => void;
-  /** A participant left; their stream is now stopped. Unmount it. */
+  /**
+   * A participant's head was lost, but the stream is kept alive frozen on
+   * its last position (see `lostStreamLingerSeconds`). Not unmounted — a
+   * hint to indicate "lost" in the UI.
+   */
+  onHeadStreamLost?: (id: number) => void;
+  /** A previously-lost head was re-found; its stream resumes tracking. */
+  onHeadStreamResumed?: (id: number) => void;
+  /** The stream is finally stopped and gone. Unmount it. */
   onHeadStreamRemoved?: (id: number) => void;
 }
 
@@ -110,6 +126,14 @@ interface HeadSlot {
   stream: MediaStream;
   /** Whether the track was matched in the latest detection round. */
   seen: boolean;
+  /**
+   * 'lost' = the track died but we keep the stream alive, frozen on the
+   * last crop, so a brief loss doesn't blank the stream and a return
+   * resumes it seamlessly. Purged to 'removed' after lingering too long.
+   */
+  state: 'active' | 'lost';
+  /** Seconds spent in the 'lost' state (drives the linger timeout). */
+  lostSeconds: number;
   target: { centerX: number; centerY: number; size: number };
 }
 
@@ -358,15 +382,15 @@ export class HeadTrackerEngine {
     }
   }
 
-  /** Add slots for new ids, refresh targets, drop slots for dead ids. */
+  /**
+   * Reconcile slots with the tracker's result. New ids get a slot; active
+   * ids refresh their target (and resume if they were lost); ids the
+   * tracker dropped are marked LOST — the stream is kept alive, frozen on
+   * its last crop, and only purged later by the linger timeout in the
+   * render loop.
+   */
   private reconcileSlots(active: TrackedHead[], removedIds: number[]): void {
-    for (const id of removedIds) this.removeSlot(id);
-
     const activeIds = new Set(active.map((t) => t.id));
-    // Defensive: also drop any slot whose track silently disappeared.
-    for (const id of [...this.slots.keys()]) {
-      if (!activeIds.has(id)) this.removeSlot(id);
-    }
 
     for (const track of active) {
       const existing = this.slots.get(track.id);
@@ -379,10 +403,34 @@ export class HeadTrackerEngine {
         // misses === 0 means this track was matched in this very round;
         // a carried-over (missed) track uses the slower hold constant.
         existing.seen = track.misses === 0;
+        if (existing.state === 'lost') this.resumeSlot(existing);
       } else {
         this.addSlot(track);
       }
     }
+
+    // Any slot whose id is no longer active (this round's deaths, plus any
+    // still-lingering earlier losses) enters/stays in the lost state.
+    for (const slot of this.slots.values()) {
+      if (!activeIds.has(slot.id) && slot.state === 'active') {
+        this.markSlotLost(slot);
+      }
+    }
+    // removedIds is implied by the loop above; referenced for clarity only.
+    void removedIds;
+  }
+
+  private markSlotLost(slot: HeadSlot): void {
+    slot.state = 'lost';
+    slot.lostSeconds = 0;
+    slot.seen = false;
+    this.callbacks.onHeadStreamLost?.(slot.id);
+  }
+
+  private resumeSlot(slot: HeadSlot): void {
+    slot.state = 'active';
+    slot.lostSeconds = 0;
+    this.callbacks.onHeadStreamResumed?.(slot.id);
   }
 
   private addSlot(track: TrackedHead): void {
@@ -406,6 +454,8 @@ export class HeadTrackerEngine {
       ctx,
       stream,
       seen: true,
+      state: 'active',
+      lostSeconds: 0,
       target: { centerX: track.centerX, centerY: track.centerY, size: track.size },
     };
     this.slots.set(track.id, slot);
@@ -438,6 +488,16 @@ export class HeadTrackerEngine {
     const outputSize = this.config.outputSize;
 
     for (const slot of this.slots.values()) {
+      if (slot.state === 'lost') {
+        slot.lostSeconds += dtSeconds;
+        if (slot.lostSeconds >= this.config.lostStreamLingerSeconds) {
+          this.removeSlot(slot.id);
+          continue;
+        }
+      }
+      // A lost slot keeps its frozen target (seen=false), so the crop holds
+      // its last position while still sampling the live frame — an unmoving
+      // camera on that spot rather than a blanked stream.
       slot.smoother.step(
         slot.target.centerX,
         slot.target.centerY,
