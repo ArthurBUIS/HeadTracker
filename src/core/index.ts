@@ -44,6 +44,15 @@ export {
 } from './cocoSsdDetector';
 
 export {
+  MoveNetHeadDetector,
+  DEFAULT_MOVENET_DETECTOR_CONFIG,
+  type PoseDetectorLike,
+  type Pose,
+  type PoseKeypoint,
+  type MoveNetDetectorConfig,
+} from './moveNetDetector';
+
+export {
   computeHsvHistogram,
   appearanceSimilarity,
   blendAppearance,

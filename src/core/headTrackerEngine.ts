@@ -24,6 +24,7 @@
 import { computeHsvHistogram, type AppearanceDescriptor } from './appearance';
 import { CocoSsdHeadDetector, type CocoSsdModelLike } from './cocoSsdDetector';
 import { FaceApiHeadDetector, type FaceApiLike } from './faceApiDetector';
+import { MoveNetHeadDetector, type PoseDetectorLike } from './moveNetDetector';
 import { HeadCropSmoother, type HeadCropConfig } from './headCrop';
 import {
   DEFAULT_TRACKER_CONFIG,
@@ -199,6 +200,20 @@ export class HeadTrackerEngine {
     config: Partial<HeadTrackerEngineConfig> = {},
   ): HeadTrackerEngine {
     return new HeadTrackerEngine(new CocoSsdHeadDetector(model), callbacks, config);
+  }
+
+  /**
+   * Convenience constructor for the pose-detection path: build the engine
+   * on a loaded @tensorflow-models/pose-detection MoveNet detector. Heads
+   * come from actual keypoints (steadier than the coco-ssd body heuristic)
+   * and still resolve from behind via shoulder geometry.
+   */
+  static withMoveNet(
+    detector: PoseDetectorLike,
+    callbacks: HeadTrackerCallbacks = {},
+    config: Partial<HeadTrackerEngineConfig> = {},
+  ): HeadTrackerEngine {
+    return new HeadTrackerEngine(new MoveNetHeadDetector(detector), callbacks, config);
   }
 
   /** Begin detecting/tracking against `source` (a playing `<video>`). */

@@ -19,8 +19,8 @@ people-counting. The reusable algorithm is `src/core`; `src/demo` +
    │        │                                        │                      │
    │        ▼                                        ▼                      │
    │  HeadDetector.detectHeads()            per-id HeadCropSmoother.step()  │
-   │  (CocoSsdHeadDetector: coco-ssd            (EMA glide toward target)   │
-   │   body boxes → head boxes)                      │                      │
+   │  (MoveNetHeadDetector: pose                (EMA glide toward target)   │
+   │   keypoints → head + body boxes)                │                      │
    │        │                                        ▼                      │
    │   + sampleAppearance (torso HSV hist)   drawImage(source → 200×200)     │
    │  HeadIdentityTracker.update()                   │                      │
@@ -40,8 +40,9 @@ detections.
 | `src/core/smoothing.ts` | Time-constant EMA (ported from VideoStitcher `person_tracking.py`, generalised to measured `dt`). | `emaWeightForTimeConstant`, `emaStep`, `clamp` |
 | `src/core/tracker.ts` | **Identity: which box is which.** 3-phase association (spatial on body box → appearance rescue → gallery re-ID) + birth/death; `setMaxMisses`, `setGalleryMaxRounds`. | `HeadIdentityTracker`, `TrackedHead`, `TrackerConfig`, `DEFAULT_TRACKER_CONFIG` |
 | `src/core/appearance.ts` | Torso HSV colour-histogram descriptor + intersection similarity + EMA blend. DOM-free (operates on RGBA data). | `computeHsvHistogram`, `appearanceSimilarity`, `blendAppearance`, `AppearanceDescriptor` |
-| `src/core/cocoSsdDetector.ts` | **Active detector.** coco-ssd body boxes → top-centre head boxes (works when facing away). | `CocoSsdHeadDetector`, `CocoSsdModelLike`, `DEFAULT_COCO_SSD_DETECTOR_CONFIG` |
-| `src/core/faceApiDetector.ts` | Alt detector kept for the model selector: face-api faces → head boxes; tfjs scope disposal. | `FaceApiHeadDetector`, `FaceApiLike`, `DEFAULT_FACE_API_DETECTOR_CONFIG` |
+| `src/core/moveNetDetector.ts` | **Active detector.** MoveNet pose keypoints → head box (face keypoints, else shoulder geometry) + body box. | `MoveNetHeadDetector`, `PoseDetectorLike`, `DEFAULT_MOVENET_DETECTOR_CONFIG` |
+| `src/core/cocoSsdDetector.ts` | Alt detector: coco-ssd body boxes → top-centre head boxes. | `CocoSsdHeadDetector`, `CocoSsdModelLike`, `DEFAULT_COCO_SSD_DETECTOR_CONFIG` |
+| `src/core/faceApiDetector.ts` | Alt detector: face-api faces → head boxes; tfjs scope disposal. | `FaceApiHeadDetector`, `FaceApiLike`, `DEFAULT_FACE_API_DETECTOR_CONFIG` |
 | `src/core/headCrop.ts` | Per-track smoothed square crop geometry, clamped to frame. | `HeadCropSmoother`, `HeadCropConfig`, `CropRect` |
 | `src/core/headTrackerEngine.ts` | Orchestrator: two loops, slot lifecycle, N output `MediaStream`s. | `HeadTrackerEngine`, `HeadStream`, `HeadTrackerEngineConfig`, `HeadTrackerCallbacks` |
 | `src/core/index.ts` | Public barrel — the portals-bound module boundary. | (re-exports) |
@@ -60,25 +61,25 @@ per new confirmed id, refreshes targets, tears down removed ids. Per render
 frame: each slot's smoother EMAs toward its target and draws the crop.
 
 ## Dependencies
-- **Runtime:** `@tensorflow-models/coco-ssd` + `@tensorflow/tfjs` (active
-  body detector); `@vladmandic/face-api` (alt detector, kept for the model
-  selector). All three are already portals deps. Core itself imports none of
-  them — only DOM/canvas/MediaStream (Electron-renderer safe); models are
-  injected.
+- **Runtime:** `@tensorflow-models/pose-detection` + `@tensorflow/tfjs`
+  (active MoveNet detector); `@tensorflow-models/coco-ssd` and
+  `@vladmandic/face-api` (alt detectors for the model selector). Core itself
+  imports none of them — only DOM/canvas/MediaStream (Electron-renderer
+  safe); models are injected.
 - **Dev:** `vite` (demo dev server + `esbuild` bundling), `typescript`
   (strict, `tsc --noEmit`). tsconfig mirrors portals: `es2021`, strict,
   `noUnusedLocals/Parameters`.
-- **Model weights:** coco-ssd `lite_mobilenet_v2` auto-downloads from Google
-  storage on first load (verified 200 OK in-browser); face-api weights from
-  jsDelivr / portals' `FACE_API_MODELS_URL`.
+- **Model weights:** MoveNet MultiPose Lightning auto-downloads on first load
+  (verified in-browser); coco-ssd / face-api weights similar when selected.
 
 ## Key decisions & gotchas
-- **Body detector, not face detector (the model swap).** coco-ssd detects
-  whole persons, so heads are tracked even when people face away — the failure
-  mode that made face-api "perform bad". The head box is a heuristic square at
-  the top-centre of the person box (`headSizeFraction` 0.18,
-  `headTopOffsetFraction` 0.12 of person height; both tunable). FaceNet was
-  rejected as the detector: it's a face-*recognition* net, still needs a
+- **Pose model for the head, not a body-box heuristic (fixes head jitter).**
+  MoveNet MultiPose gives head keypoints (nose/eyes/ears) → head box tracks
+  the real head; facing away, it falls back to shoulder geometry (head sits
+  `shoulderHeadRise` × shoulder-width above the shoulder line). Emits a body
+  box (keypoint bbox) for association + appearance. coco-ssd (body→head
+  heuristic) and face-api remain behind `HeadDetector` for the selector.
+  FaceNet was rejected as a detector: it's face-*recognition*, needs a
   visible face — useful later only for re-ID.
 - **Detector is injected, not imported** by the engine (`HeadDetector`
   interface) so portals reuses its one loaded tfjs engine — the same "one
@@ -138,21 +139,20 @@ frame: each slot's smoother EMAs toward its target and draws the crop.
 ## Entry points
 - Demo: `npm run dev` → `index.html` → `src/demo/main.ts` (webcam).
 - Library: `import { HeadTrackerEngine } from './core'` →
-  `HeadTrackerEngine.withCocoSsd(model, callbacks, config).start(video)`
-  (or `.withFaceApi(faceapi, …)`).
-- Verified headless with synthetic detections (identity persistence, birth/
-  death, EMA glide + clamp) during development; no committed test suite yet.
+  `HeadTrackerEngine.withMoveNet(detector, callbacks, config).start(video)`
+  (or `.withCocoSsd(model, …)` / `.withFaceApi(faceapi, …)`).
+- Verified headless during development (identity persistence + re-ID + gallery,
+  MoveNet head geometry, EMA glide + clamp); no committed test suite yet.
 
 ## TODO(verify) / next steps
 - **Fold appearance into phase-1 cost** so active crossings don't swap ids
   (today appearance is only a rescue/gallery step after spatial matching).
 - **Stronger descriptor** than a colour histogram (learned embedding, or
   FaceNet when a face is visible) for similar-clothing / lighting robustness.
-- **In-page model selector** (coco-ssd ↔ face-api ↔ future YOLO/pose): both
-  detectors exist behind `HeadDetector`; the demo UI toggle + shared tfjs
-  engine wiring are not built yet.
-- Kalman/motion prediction to lift the "≤ ~2.5 head-widths per 2 s" limit.
-- Tune `headSizeFraction`/`headTopOffsetFraction` per camera framing.
+- **In-page model selector** (MoveNet ↔ coco-ssd ↔ face-api): all three
+  exist behind `HeadDetector`; the demo UI toggle + shared tfjs engine
+  wiring are not built yet.
+- Kalman/motion prediction to lift the "≤ ~2.5 head-widths per interval" limit.
 - Integration shim in portals (Daily track → engine → tiles) — not started.
 
 ## Pointers

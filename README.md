@@ -19,7 +19,7 @@ Four stages, two clocks:
 
 | Stage | Runs | What it does |
 |-------|------|--------------|
-| **Detect** | every **0.2–2 s** (adjustable) | coco-ssd detects **bodies**; the head box is the top-centre region of each person box. Body detection works from any angle, so people **turned away from the camera are still tracked**. |
+| **Detect** | every **0.2–2 s** (adjustable) | MoveNet MultiPose locates each person's **head** from keypoints (nose/eyes/ears), falling back to shoulder geometry when the face isn't visible — so people **turned away from the camera are still tracked**, without the body-box jitter. |
 | **Track** | each detection | (1) greedy IoU **+ centre-distance** on the body box, (2) **appearance rescue**, (3) **gallery re-ID** → a stable integer id per participant, with birth (`minHits`) / death (interval-scaled `maxMisses`). **This is the "which box is which" part.** |
 | **Smooth + crop** | every render frame (~30 fps) | per-id EMA glides the 200×200 crop toward the head; motion stays smooth between the 2 s detections. |
 | **Output** | continuous | one `canvas.captureStream()` per id. |
@@ -58,14 +58,17 @@ after lingering that long with no return is the stream finally stopped.
 
 ### Detection model
 
-The active detector is **coco-ssd** (`@tensorflow-models/coco-ssd` on tfjs —
-already a dependency in portals-projector-agent), chosen over face detection
-because it fires on whole bodies and so survives people facing away. The
-`HeadDetector` interface is pluggable: a **face-api** detector
-(`faceApiDetector.ts`) is kept in the repo for the planned in-page model
-selector, and a literal YOLOv8-ONNX or a pose model can drop into the same
-slot. The head box is derived from the body box via two tunable fractions
-(`headSizeFraction`, `headTopOffsetFraction` in `cocoSsdDetector.ts`).
+The active detector is **MoveNet MultiPose**
+(`@tensorflow-models/pose-detection` on tfjs). It locates the head from
+actual keypoints, so the head box is far steadier than a slice of a jittery
+person box, and it still resolves a head from behind via shoulder geometry
+(`moveNetDetector.ts`). It also emits a body box (the keypoint bounding box)
+that the tracker associates on and the engine samples for appearance.
+
+The `HeadDetector` interface is pluggable — three implementations live in the
+repo for a planned in-page model selector: **MoveNet** (active),
+**coco-ssd** body detection (`cocoSsdDetector.ts`), and **face-api**
+(`faceApiDetector.ts`). A YOLOv8-ONNX detector could drop into the same slot.
 
 ## Run the demo
 
@@ -134,7 +137,8 @@ HeadTracker/
 │   │   ├── smoothing.ts        time-constant EMA (from person_tracking.py)
 │   │   ├── tracker.ts          identity association (spatial + appearance + gallery)
 │   │   ├── appearance.ts       torso colour-histogram descriptors for re-ID
-│   │   ├── cocoSsdDetector.ts  coco-ssd body detection → head boxes (active)
+│   │   ├── moveNetDetector.ts  MoveNet pose → head boxes from keypoints (active)
+│   │   ├── cocoSsdDetector.ts  coco-ssd body → head boxes (kept for selector)
 │   │   ├── faceApiDetector.ts  face-api faces → head boxes (kept for selector)
 │   │   ├── headCrop.ts         per-track smoothed 200×200 crop geometry
 │   │   ├── headTrackerEngine.ts orchestrator → N MediaStreams
@@ -152,7 +156,6 @@ HeadTracker/
 - **Active crossings can still swap ids.** Phase 1 spatial matching runs
   before appearance, so when two people overlap and part, labels can trade.
   Folding appearance into the phase-1 cost (not just as a rescue) would help.
-- The head box is a heuristic slice of the body box (COCO has no "head"
-  class), so its size/position can drift with unusual poses or partial bodies
-  — tune `headSizeFraction` / `headTopOffsetFraction`, or swap in a
-  head/pose-specific model behind the same `HeadDetector` interface.
+- The facing-away head estimate is shoulder geometry (a fixed rise above the
+  shoulder line), so it's approximate for unusual postures — tune
+  `shoulderHeadScale` / `shoulderHeadRise` in `moveNetDetector.ts`.

@@ -14,14 +14,14 @@
  * Daily.co track and each HeadStream fed to a video tile.
  */
 
-// Body-detection model: coco-ssd on tfjs — the same pair portals already
-// ships. Importing '@tensorflow/tfjs' registers the webgl/cpu backend that
-// coco-ssd runs on. Detecting whole bodies (not faces) is what lets the
-// tracker follow heads even when people are turned away from the camera.
+// Pose model: MoveNet MultiPose on tfjs. Importing '@tensorflow/tfjs'
+// registers the webgl/cpu backend the model runs on. Pose keypoints give
+// the actual head position (steadier than a body-box heuristic) and still
+// resolve heads from behind via shoulder geometry.
 import * as tf from '@tensorflow/tfjs';
-import * as cocoSsd from '@tensorflow-models/coco-ssd';
+import * as poseDetection from '@tensorflow-models/pose-detection';
 
-import { HeadTrackerEngine, type CocoSsdModelLike } from '../core';
+import { HeadTrackerEngine, type PoseDetectorLike } from '../core';
 
 const statusEl = document.getElementById('status') as HTMLElement;
 const captionEl = document.getElementById('sourceCaption') as HTMLElement;
@@ -37,7 +37,7 @@ const reidInput = document.getElementById('reid') as HTMLInputElement;
 const tileById = new Map<number, HTMLElement>();
 
 let engine: HeadTrackerEngine | null = null;
-let cocoSsdModel: cocoSsd.ObjectDetection | null = null;
+let poseDetector: poseDetection.PoseDetector | null = null;
 let currentObjectUrl: string | null = null;
 let detectionIntervalMs = Number(intervalInput.value);
 let appearanceReid = reidInput.checked;
@@ -89,12 +89,15 @@ function removeTile(id: number): void {
   }
 }
 
-/** Load the coco-ssd model once; idempotent across source switches. */
+/** Load the MoveNet pose detector once; idempotent across source switches. */
 async function ensureModelLoaded(): Promise<void> {
-  if (cocoSsdModel) return;
-  setStatus('Loading coco-ssd body-detection model…');
+  if (poseDetector) return;
+  setStatus('Loading MoveNet MultiPose model…');
   await tf.ready();
-  cocoSsdModel = await cocoSsd.load({ base: 'lite_mobilenet_v2' });
+  poseDetector = await poseDetection.createDetector(poseDetection.SupportedModels.MoveNet, {
+    modelType: poseDetection.movenet.modelType.MULTIPOSE_LIGHTNING,
+    enableTracking: false,
+  });
 }
 
 /** Stop any running engine and any previous source (webcam tracks / file URL). */
@@ -119,9 +122,9 @@ function teardownCurrentSource(): void {
 
 /** Build the engine on the (already playing) source video and start it. */
 function startEngineOnSource(): void {
-  if (!cocoSsdModel) throw new Error('Model not loaded');
-  engine = HeadTrackerEngine.withCocoSsd(
-    cocoSsdModel as unknown as CocoSsdModelLike,
+  if (!poseDetector) throw new Error('Model not loaded');
+  engine = HeadTrackerEngine.withMoveNet(
+    poseDetector as unknown as PoseDetectorLike,
     {
       onHeadStreamAdded: ({ id, stream }) => {
         addTile(id, stream);
