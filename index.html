@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>HeadTracker — multi-person head streams</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      }
+      body {
+        margin: 0;
+        padding: 1.5rem;
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        flex-wrap: wrap;
+      }
+      h1 {
+        font-size: 1.1rem;
+        margin: 0;
+      }
+      #status {
+        opacity: 0.75;
+        font-size: 0.9rem;
+      }
+      button {
+        font-size: 0.95rem;
+        padding: 0.5rem 1rem;
+        border-radius: 8px;
+        border: 1px solid currentColor;
+        background: transparent;
+        cursor: pointer;
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+      .interval-control {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-size: 0.9rem;
+      }
+      .interval-control input[type='range'] {
+        width: 160px;
+      }
+      #intervalLabel {
+        min-width: 3ch;
+        font-variant-numeric: tabular-nums;
+      }
+      .panes {
+        display: flex;
+        gap: 1.5rem;
+        flex-wrap: wrap;
+        align-items: flex-start;
+      }
+      .source-pane {
+        display: flex;
+        flex-direction: column;
+        gap: 0.35rem;
+      }
+      .source-pane video {
+        width: 480px;
+        max-width: 90vw;
+        border-radius: 10px;
+        background: #0003;
+      }
+      .caption {
+        font-size: 0.8rem;
+        opacity: 0.7;
+      }
+      #grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, 200px);
+        gap: 1rem;
+        align-content: start;
+      }
+      .tile {
+        position: relative;
+        width: 200px;
+        height: 200px;
+        border-radius: 10px;
+        overflow: hidden;
+        background: #0006;
+        box-shadow: 0 1px 6px #0004;
+      }
+      .tile video {
+        width: 200px;
+        height: 200px;
+        object-fit: cover;
+        display: block;
+      }
+      .tile-label {
+        position: absolute;
+        left: 6px;
+        bottom: 6px;
+        padding: 2px 8px;
+        border-radius: 6px;
+        font-size: 0.75rem;
+        background: #000a;
+        color: #fff;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>HeadTracker</h1>
+      <button id="start">Start webcam</button>
+      <button id="loadVideo">Load video file…</button>
+      <input id="videoFile" type="file" accept="video/*" hidden />
+      <label class="interval-control">
+        Detection interval:
+        <input id="interval" type="range" min="200" max="2000" step="100" value="500" />
+        <span id="intervalLabel">0.5 s</span>
+      </label>
+      <label class="interval-control">
+        <input id="reid" type="checkbox" checked />
+        Appearance re-ID
+      </label>
+      <span id="status">Idle. Start a webcam or load a video file.</span>
+    </header>
+    <div class="panes">
+      <div class="source-pane">
+        <video id="source" muted playsinline controls></video>
+        <span class="caption" id="sourceCaption">Source stream</span>
+      </div>
+      <div>
+        <div class="caption">Per-participant 200×200 output streams:</div>
+        <div id="grid"></div>
+      </div>
+    </div>
+    <script type="module" src="/src/demo/main.ts"></script>
+  </body>
+</html>
