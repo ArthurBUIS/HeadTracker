@@ -63,6 +63,16 @@ export {
 export { solveMinCostAssignment, NO_ASSIGNMENT } from './assignment';
 
 export {
+  faceDistance,
+  faceAffinity,
+  blendFace,
+  matchFacesToBoxes,
+  type FaceDescriptor,
+} from './faceEmbedding';
+
+export type { FaceObservation, FaceEmbedder } from './types';
+
+export {
   HeadCropSmoother,
   DEFAULT_HEAD_CROP_CONFIG,
   type HeadCropConfig,

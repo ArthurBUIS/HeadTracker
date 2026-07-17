@@ -33,10 +33,19 @@ person and has no identity; the tracker here is the new piece.
 
 Spatial tracking alone can't recover an id once a person is lost — they come
 back as a new number (the "one person → 8 heads" bug). So each track also
-carries an **appearance descriptor**: an HSV colour histogram of the torso
-region (`appearance.ts`) — essentially *what colour their clothes are*.
-Chosen over a face embedding (FaceNet) because it works from **any angle**,
-including people turned away, and needs no extra model.
+carries appearance cues:
+
+- **Torso colour histogram** (`appearance.ts`) — an HSV histogram of the
+  clothing. Works from **any angle**, including people turned away; the
+  always-on backbone.
+- **Face embedding** (`faceEmbedding.ts`) — a 128-D descriptor from face-api's
+  FaceNet-style FaceRecognitionNet, a *much* stronger cue that separates
+  **look-alikes** (same clothes, different face) that colour can't. Only
+  present when a face is visible, so it's a **booster** layered on the colour
+  backbone, not a replacement. Toggle with **Face re-ID**.
+
+The tracker prefers the face embedding when both a track and a detection have
+one (weighted `faceWeight`, 0.85), and falls back to colour otherwise.
 
 Association runs in three phases (`tracker.ts`): (1) **primary** — one
 **optimal (Hungarian) assignment** over a cost that **fuses** spatial
@@ -95,8 +104,10 @@ Two source modes:
 
 The **Detection interval** slider (0.2–2 s) re-runs detection more or less
 often; it applies live to a running session. The **Appearance re-ID**
-checkbox toggles identity recovery by clothing colour — turn it off to see
-how much more the ids churn without it.
+checkbox toggles identity recovery by clothing colour; **Face re-ID** adds
+the 128-D face descriptor on top (loads face-api models on first enable).
+Turn either off to feel how much they help — Face re-ID especially when
+people are dressed alike.
 
 The left pane is the source; the grid on the right is one 200×200 tracked
 stream per detected head, each labelled with its stable id. Walk out of frame
@@ -147,6 +158,7 @@ HeadTracker/
 │   │   ├── tracker.ts          identity association (fused-cost + appearance + gallery)
 │   │   ├── assignment.ts       Hungarian optimal min-cost assignment
 │   │   ├── appearance.ts       torso colour-histogram descriptors for re-ID
+│   │   ├── faceEmbedding.ts    128-D face-descriptor re-ID cue + face→head map
 │   │   ├── moveNetDetector.ts  MoveNet pose → head boxes from keypoints (active)
 │   │   ├── cocoSsdDetector.ts  coco-ssd body → head boxes (kept for selector)
 │   │   ├── faceApiDetector.ts  face-api faces → head boxes (kept for selector)
@@ -159,12 +171,15 @@ HeadTracker/
 
 ## Known prototype limits
 
-- Appearance re-ID uses clothing **colour**, so it's weak when people wear
-  similar colours or under strong lighting changes — the case where crossings
-  can still swap (colour can't disambiguate look-alikes). A learned
-  embedding (person re-ID, or a FaceNet-style face descriptor when a face is
-  visible) behind the same interface is the next step. `appearanceWeight` /
-  `appearanceThreshold` (in `tracker.ts`) tune the tradeoff.
+- **Face re-ID only helps when faces are visible.** For people turned away
+  it falls back to the colour histogram, which still can't separate
+  look-alikes — so a same-clothes crossing where neither face shows can still
+  swap. A learned whole-body re-ID embedding would cover that gap behind the
+  same interface. `faceWeight` / `appearanceWeight` (in `tracker.ts`) tune
+  the cue balance.
+- Face embedding adds cost: it runs face-api (detector + landmarks +
+  recognition) each detection round. Fine at the room scale here; for many
+  people or a fast interval, budget accordingly.
 - The facing-away head estimate is shoulder geometry (a fixed rise above the
   shoulder line), so it's approximate for unusual postures — tune
   `shoulderHeadScale` / `shoulderHeadRise` in `moveNetDetector.ts`.

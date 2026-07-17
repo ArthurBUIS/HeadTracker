@@ -24,6 +24,7 @@
 import { computeHsvHistogram, type AppearanceDescriptor } from './appearance';
 import { CocoSsdHeadDetector, type CocoSsdModelLike } from './cocoSsdDetector';
 import { FaceApiHeadDetector, type FaceApiLike } from './faceApiDetector';
+import { matchFacesToBoxes } from './faceEmbedding';
 import { MoveNetHeadDetector, type PoseDetectorLike } from './moveNetDetector';
 import { HeadCropSmoother, type HeadCropConfig } from './headCrop';
 import {
@@ -32,7 +33,14 @@ import {
   type TrackedHead,
   type TrackerConfig,
 } from './tracker';
-import type { Box, FrameSize, HeadDetection, HeadDetector, FrameSource } from './types';
+import type {
+  Box,
+  FaceEmbedder,
+  FrameSize,
+  HeadDetection,
+  HeadDetector,
+  FrameSource,
+} from './types';
 
 /** Torso sub-region of a body box, sampled for the appearance histogram. */
 const TORSO_X_INSET = 0.2; // trim 20% off each side (arms/background)
@@ -71,6 +79,13 @@ export interface HeadTrackerEngineConfig {
    */
   appearanceReid: boolean;
   /**
+   * Enable FACE-embedding re-identification: when a `FaceEmbedder` is set
+   * (via `setFaceEmbedder`), run it each detection round and attach a 128-D
+   * descriptor to the matching head — a strong cue that separates
+   * look-alikes. No-op when no embedder is set. Toggle via `setFaceReid`.
+   */
+  faceReid: boolean;
+  /**
    * How long (wall-clock) a lost id stays re-identifiable. Converted to
    * tracker gallery rounds using the current interval.
    */
@@ -97,6 +112,7 @@ export const DEFAULT_ENGINE_CONFIG: HeadTrackerEngineConfig = {
   detectionIntervalMs: 500,
   trackCoastSeconds: 2.0,
   appearanceReid: true,
+  faceReid: false,
   reidMemorySeconds: 30,
   lostStreamLingerSeconds: 30,
   outputFps: 30,
@@ -163,6 +179,9 @@ export class HeadTrackerEngine {
   private appearanceCanvas: HTMLCanvasElement | null = null;
 
   private appearanceCtx: CanvasRenderingContext2D | null = null;
+
+  /** Optional face detector+embedder for face-based re-ID (injected). */
+  private faceEmbedder: FaceEmbedder | null = null;
 
   constructor(
     detector: HeadDetector,
@@ -257,6 +276,21 @@ export class HeadTrackerEngine {
   /** Whether appearance re-identification is currently on. */
   isAppearanceReidEnabled(): boolean {
     return this.config.appearanceReid;
+  }
+
+  /** Inject (or clear) the face detector+embedder used for face re-ID. */
+  setFaceEmbedder(embedder: FaceEmbedder | null): void {
+    this.faceEmbedder = embedder;
+  }
+
+  /** Turn face-embedding re-identification on/off at runtime. */
+  setFaceReid(enabled: boolean): void {
+    this.config.faceReid = enabled;
+  }
+
+  /** Whether face re-ID is on AND an embedder is available. */
+  isFaceReidActive(): boolean {
+    return this.config.faceReid && this.faceEmbedder !== null;
   }
 
   private clampInterval(intervalMs: number): number {
@@ -374,6 +408,37 @@ export class HeadTrackerEngine {
     return { x, y, width, height };
   }
 
+  /**
+   * Run the injected face embedder and attach each face's 128-D descriptor
+   * to the head box that contains it. Failures are swallowed (face re-ID is
+   * a booster; detection/tracking must continue without it).
+   */
+  private async attachFaceDescriptors(detections: HeadDetection[]): Promise<void> {
+    const source = this.source;
+    if (!source || !this.faceEmbedder || detections.length === 0) return;
+    try {
+      const faces = await this.faceEmbedder.embedFaces(source);
+      if (faces.length === 0) return;
+      const headBoxes: Box[] = detections.map((d) => ({
+        x: d.x,
+        y: d.y,
+        width: d.width,
+        height: d.height,
+      }));
+      const faceToHead = matchFacesToBoxes(
+        faces.map((f) => f.box),
+        headBoxes,
+      );
+      for (let fi = 0; fi < faces.length; fi += 1) {
+        const di = faceToHead[fi];
+        if (di >= 0) detections[di].faceDescriptor = faces[fi].descriptor;
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[HeadTracker] face embedding failed:', err);
+    }
+  }
+
   private async runDetectionRound(): Promise<void> {
     if (!this.running || this.detecting || !this.source) return;
     if (!this.frameSize()) return; // video not ready yet
@@ -385,6 +450,9 @@ export class HeadTrackerEngine {
         for (const detection of detections) {
           detection.appearance = this.sampleAppearance(detection, frame);
         }
+      }
+      if (this.isFaceReidActive()) {
+        await this.attachFaceDescriptors(detections);
       }
       const { active, removedIds } = this.tracker.update(detections);
       this.reconcileSlots(active, removedIds);

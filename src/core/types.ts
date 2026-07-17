@@ -39,6 +39,27 @@ export interface HeadDetection extends Box {
    * `appearance.ts`.
    */
   appearance?: import('./appearance').AppearanceDescriptor;
+  /**
+   * Optional 128-D face embedding, when a face was detected inside this
+   * head. A much stronger re-ID cue than colour (distinguishes look-alikes
+   * by face); absent for people facing away. See `faceEmbedding.ts`.
+   */
+  faceDescriptor?: import('./faceEmbedding').FaceDescriptor;
+}
+
+/** A face detected in the frame: its box plus 128-D embedding. */
+export interface FaceObservation {
+  box: Box;
+  descriptor: import('./faceEmbedding').FaceDescriptor;
+}
+
+/**
+ * Runs face detection + embedding on a frame. Injected into the engine so
+ * the core stays decoupled from face-api (the demo wires it up). Returns one
+ * observation per detected face.
+ */
+export interface FaceEmbedder {
+  embedFaces(source: FrameSource): Promise<FaceObservation[]>;
 }
 
 /**

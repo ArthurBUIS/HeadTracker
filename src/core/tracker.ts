@@ -35,6 +35,7 @@ import {
   type AppearanceDescriptor,
 } from './appearance';
 import { NO_ASSIGNMENT, solveMinCostAssignment } from './assignment';
+import { blendFace, faceAffinity, type FaceDescriptor } from './faceEmbedding';
 import type { Box, HeadDetection } from './types';
 
 /** Cost marking a (track, detection) pair as forbidden in the assignment. */
@@ -61,14 +62,17 @@ export interface TrackedHead {
   misses: number;
   /** True once `hits >= minHits`; only confirmed tracks get a stream. */
   confirmed: boolean;
-  /** EMA of this track's appearance signature (undefined until observed). */
+  /** EMA of this track's torso colour signature (undefined until observed). */
   appearance?: AppearanceDescriptor;
+  /** EMA of this track's 128-D face embedding (undefined until a face seen). */
+  faceDescriptor?: FaceDescriptor;
 }
 
 /** An id kept in memory after its track died, for gallery re-identification. */
 interface GalleryEntry {
   id: number;
-  appearance: AppearanceDescriptor;
+  appearance?: AppearanceDescriptor;
+  faceDescriptor?: FaceDescriptor;
   /** Rounds since the track died; expired past `galleryMaxRounds`. */
   age: number;
 }
@@ -120,6 +124,18 @@ export interface TrackerConfig {
    * different-looking box shouldn't overwrite a good signature.
    */
   appearanceUpdateFloor: number;
+  /**
+   * Weight of a FACE-embedding affinity vs spatial in the phase-1 cost.
+   * Higher than `appearanceWeight` because a face embedding is far more
+   * discriminative than clothing colour, so it should dominate when present.
+   */
+  faceWeight: number;
+  /** Distance at which face affinity reaches 0 (face-api same-person ≈0.6). */
+  faceDistanceNorm: number;
+  /** Min face affinity to accept a face-based rescue / gallery re-ID. */
+  faceMatchAffinity: number;
+  /** EMA weight on a fresh face descriptor when updating a track. */
+  faceEmaWeight: number;
 }
 
 export const DEFAULT_TRACKER_CONFIG: TrackerConfig = {
@@ -133,6 +149,10 @@ export const DEFAULT_TRACKER_CONFIG: TrackerConfig = {
   appearanceWeight: 0.6,
   detectionOverlapFreeze: 0.15,
   appearanceUpdateFloor: 0.3,
+  faceWeight: 0.85,
+  faceDistanceNorm: 1.2,
+  faceMatchAffinity: 0.5,
+  faceEmaWeight: 0.2,
 };
 
 /** Result of one association round, for the engine to reconcile streams. */
@@ -271,11 +291,10 @@ export class HeadIdentityTracker {
       if (di === NO_ASSIGNMENT) continue;
       trackMatched[ti] = true;
       detMatched[di] = true;
-      const sim =
-        this.tracks[ti].appearance && detections[di].appearance
-          ? appearanceSimilarity(this.tracks[ti].appearance, detections[di].appearance)
-          : 1;
-      const updateAppearance = !occludedDet[di] && sim >= this.config.appearanceUpdateFloor;
+      const reid = this.reidSimilarity(this.tracks[ti], detections[di]);
+      const updateAppearance =
+        !occludedDet[di] &&
+        (!reid.hasEvidence || reid.sim >= this.config.appearanceUpdateFloor);
       this.applyMatch(this.tracks[ti], detections[di], updateAppearance);
     }
   }
@@ -293,12 +312,40 @@ export class HeadIdentityTracker {
     if (iou < this.config.iouThreshold && distance > gate) return DISALLOWED_COST;
 
     const spatialAffinity = Math.max(iou, gate > 0 ? Math.max(0, 1 - distance / gate) : 0);
-    if (track.appearance && detection.appearance) {
-      const appearanceAffinity = appearanceSimilarity(track.appearance, detection.appearance);
-      const w = this.config.appearanceWeight;
-      return 1 - (w * appearanceAffinity + (1 - w) * spatialAffinity);
+    const reid = this.reidSimilarity(track, detection);
+    if (reid.hasEvidence) {
+      const w = reid.isFace ? this.config.faceWeight : this.config.appearanceWeight;
+      return 1 - (w * reid.sim + (1 - w) * spatialAffinity);
     }
     return 1 - spatialAffinity;
+  }
+
+  /**
+   * Re-ID affinity between two appearance-carrying things. Prefers the FACE
+   * embedding when both sides have one (far more discriminative than colour);
+   * otherwise uses the torso colour histogram. `hasEvidence` is false when
+   * there's no shared cue (e.g. both faces away, only spatial to go on).
+   */
+  private reidSimilarity(
+    a: { appearance?: AppearanceDescriptor; faceDescriptor?: FaceDescriptor },
+    b: { appearance?: AppearanceDescriptor; faceDescriptor?: FaceDescriptor },
+  ): { sim: number; isFace: boolean; hasEvidence: boolean } {
+    if (a.faceDescriptor && b.faceDescriptor) {
+      return {
+        sim: faceAffinity(a.faceDescriptor, b.faceDescriptor, this.config.faceDistanceNorm),
+        isFace: true,
+        hasEvidence: true,
+      };
+    }
+    if (a.appearance && b.appearance) {
+      return { sim: appearanceSimilarity(a.appearance, b.appearance), isFace: false, hasEvidence: true };
+    }
+    return { sim: 0, isFace: false, hasEvidence: false };
+  }
+
+  /** Min similarity to accept a rescue / gallery match, per cue type. */
+  private reidThreshold(isFace: boolean): number {
+    return isFace ? this.config.faceMatchAffinity : this.config.appearanceThreshold;
   }
 
   /** Flag detections that overlap another detection (mutual occlusion). */
@@ -315,22 +362,25 @@ export class HeadIdentityTracker {
     return occluded;
   }
 
-  /** Phase 2: rescue spatially-unmatched pairs by appearance similarity. */
+  /** Phase 2: rescue spatially-unmatched pairs by appearance (face or colour). */
   private matchByAppearance(
     detections: HeadDetection[],
     trackMatched: boolean[],
     detMatched: boolean[],
   ): void {
-    const pairs: { ti: number; di: number; sim: number }[] = [];
+    const pairs: { ti: number; di: number; sim: number; isFace: boolean }[] = [];
     for (let ti = 0; ti < this.tracks.length; ti += 1) {
-      if (trackMatched[ti] || !this.tracks[ti].appearance) continue;
+      if (trackMatched[ti]) continue;
       for (let di = 0; di < detections.length; di += 1) {
-        if (detMatched[di] || !detections[di].appearance) continue;
-        const sim = appearanceSimilarity(this.tracks[ti].appearance, detections[di].appearance);
-        if (sim >= this.config.appearanceThreshold) pairs.push({ ti, di, sim });
+        if (detMatched[di]) continue;
+        const r = this.reidSimilarity(this.tracks[ti], detections[di]);
+        if (r.hasEvidence && r.sim >= this.reidThreshold(r.isFace)) {
+          pairs.push({ ti, di, sim: r.sim, isFace: r.isFace });
+        }
       }
     }
-    pairs.sort((p, q) => q.sim - p.sim);
+    // Prefer face matches (more reliable), then higher similarity.
+    pairs.sort((p, q) => Number(q.isFace) - Number(p.isFace) || q.sim - p.sim);
     for (const pair of pairs) {
       if (trackMatched[pair.ti] || detMatched[pair.di]) continue;
       trackMatched[pair.ti] = true;
@@ -343,21 +393,25 @@ export class HeadIdentityTracker {
   private reidFromGallery(detections: HeadDetection[], detMatched: boolean[]): void {
     const usedGalleryIds = new Set<number>();
     for (let di = 0; di < detections.length; di += 1) {
-      if (detMatched[di] || !detections[di].appearance) continue;
+      const det = detections[di];
+      if (detMatched[di] || (!det.appearance && !det.faceDescriptor)) continue;
       let best: GalleryEntry | null = null;
-      let bestSim = this.config.appearanceThreshold;
+      let bestScore = -1;
       for (const entry of this.gallery) {
         if (usedGalleryIds.has(entry.id)) continue;
-        const sim = appearanceSimilarity(entry.appearance, detections[di].appearance);
-        if (sim >= bestSim) {
-          bestSim = sim;
+        const r = this.reidSimilarity(entry, det);
+        if (!r.hasEvidence || r.sim < this.reidThreshold(r.isFace)) continue;
+        // Rank face matches above any colour match, then by similarity.
+        const score = (r.isFace ? 1 : 0) + r.sim;
+        if (score > bestScore) {
+          bestScore = score;
           best = entry;
         }
       }
       if (best) {
         usedGalleryIds.add(best.id);
         this.gallery = this.gallery.filter((e) => e.id !== best!.id);
-        this.tracks.push(this.resurrect(best.id, detections[di]));
+        this.tracks.push(this.resurrect(best.id, det));
         detMatched[di] = true;
       }
     }
@@ -369,8 +423,13 @@ export class HeadIdentityTracker {
     for (const track of this.tracks) {
       if (track.misses <= this.config.maxMisses) {
         survivors.push(track);
-      } else if (track.confirmed && track.appearance) {
-        this.gallery.push({ id: track.id, appearance: track.appearance, age: 0 });
+      } else if (track.confirmed && (track.appearance || track.faceDescriptor)) {
+        this.gallery.push({
+          id: track.id,
+          appearance: track.appearance,
+          faceDescriptor: track.faceDescriptor,
+          age: 0,
+        });
       }
     }
     this.tracks = survivors;
@@ -396,6 +455,7 @@ export class HeadIdentityTracker {
     track.misses = 0;
     if (updateAppearance) {
       track.appearance = this.mergeAppearance(track.appearance, detection.appearance);
+      track.faceDescriptor = this.mergeFace(track.faceDescriptor, detection.faceDescriptor);
     }
     if (!track.confirmed && track.hits >= this.config.minHits) track.confirmed = true;
   }
@@ -423,6 +483,7 @@ export class HeadIdentityTracker {
       misses: 0,
       confirmed,
       appearance: detection.appearance ? detection.appearance.slice() : undefined,
+      faceDescriptor: detection.faceDescriptor ? detection.faceDescriptor.slice() : undefined,
     };
   }
 
@@ -433,5 +494,14 @@ export class HeadIdentityTracker {
     if (!next) return previous;
     if (!previous) return next.slice();
     return blendAppearance(previous, next, this.config.appearanceEmaWeight);
+  }
+
+  private mergeFace(
+    previous: FaceDescriptor | undefined,
+    next: FaceDescriptor | undefined,
+  ): FaceDescriptor | undefined {
+    if (!next) return previous;
+    if (!previous) return next.slice();
+    return blendFace(previous, next, this.config.faceEmaWeight);
   }
 }

@@ -40,6 +40,7 @@ detections.
 | `src/core/smoothing.ts` | Time-constant EMA (ported from VideoStitcher `person_tracking.py`, generalised to measured `dt`). | `emaWeightForTimeConstant`, `emaStep`, `clamp` |
 | `src/core/tracker.ts` | **Identity: which box is which.** 3-phase association (fused spatial+appearance Hungarian match → appearance rescue → gallery re-ID) + contamination guard + birth/death; `setMaxMisses`, `setGalleryMaxRounds`. | `HeadIdentityTracker`, `TrackedHead`, `TrackerConfig`, `DEFAULT_TRACKER_CONFIG` |
 | `src/core/assignment.ts` | Hungarian (Kuhn–Munkres) min-cost assignment; rectangular via padding, forbidden pairs via a disallow cost. | `solveMinCostAssignment`, `NO_ASSIGNMENT` |
+| `src/core/faceEmbedding.ts` | 128-D face-descriptor distance/affinity/EMA + face→head box assignment. DOM-free; the embedder itself is injected. | `faceDistance`, `faceAffinity`, `blendFace`, `matchFacesToBoxes`, `FaceDescriptor` |
 | `src/core/appearance.ts` | Torso HSV colour-histogram descriptor + intersection similarity + EMA blend. DOM-free (operates on RGBA data). | `computeHsvHistogram`, `appearanceSimilarity`, `blendAppearance`, `AppearanceDescriptor` |
 | `src/core/moveNetDetector.ts` | **Active detector.** MoveNet pose keypoints → head box (face keypoints, else shoulder geometry) + body box. | `MoveNetHeadDetector`, `PoseDetectorLike`, `DEFAULT_MOVENET_DETECTOR_CONFIG` |
 | `src/core/cocoSsdDetector.ts` | Alt detector: coco-ssd body boxes → top-centre head boxes. | `CocoSsdHeadDetector`, `CocoSsdModelLike`, `DEFAULT_COCO_SSD_DETECTOR_CONFIG` |
@@ -63,10 +64,11 @@ frame: each slot's smoother EMAs toward its target and draws the crop.
 
 ## Dependencies
 - **Runtime:** `@tensorflow-models/pose-detection` + `@tensorflow/tfjs`
-  (active MoveNet detector); `@tensorflow-models/coco-ssd` and
-  `@vladmandic/face-api` (alt detectors for the model selector). Core itself
-  imports none of them — only DOM/canvas/MediaStream (Electron-renderer
-  safe); models are injected.
+  (active MoveNet detector); `@vladmandic/face-api` **nobundle** build for the
+  face-embedding re-ID (shares the one tfjs engine — see FaceDetection.jsx in
+  portals); `@tensorflow-models/coco-ssd` (alt detector). Core imports none of
+  them — only DOM/canvas/MediaStream (Electron-renderer safe); detector and
+  face embedder are injected.
 - **Dev:** `vite` (demo dev server + `esbuild` bundling), `typescript`
   (strict, `tsc --noEmit`). tsconfig mirrors portals: `es2021`, strict,
   `noUnusedLocals/Parameters`.
@@ -98,14 +100,24 @@ frame: each slot's smoother EMAs toward its target and draws the crop.
   2.5 × avg box size), so a box that moved far still matches; kept modest so
   two close people aren't merged.
 - **Appearance re-identification (3-phase association).** Each detection gets
-  an HSV torso colour histogram (`sampleAppearance` → `computeHsvHistogram`).
-  Phase 1 is a single **optimal (Hungarian) assignment** over a cost that
-  **fuses** spatial affinity with clothing similarity (`appearanceWeight`
-  0.6, spatial-gated); phase 2 rescues beyond the gate by appearance; phase 3
-  resurrects a **recently-lost id from a gallery**. `appearanceThreshold`
-  0.55 gates phases 2–3; gallery lifetime = `reidMemorySeconds` (30) /
-  interval. Toggle live via `setAppearanceReid`; when off (or descriptor
-  absent, e.g. face-api) phase 1 is spatial-only and 2–3 no-op.
+  an HSV torso colour histogram (`sampleAppearance` → `computeHsvHistogram`)
+  and, when a face is visible and `faceReid` is on, a **128-D face embedding**
+  (`attachFaceDescriptors` → injected `FaceEmbedder`, mapped to a head via
+  `matchFacesToBoxes`). Phase 1 is a single **optimal (Hungarian) assignment**
+  over a cost fusing spatial affinity with a re-ID affinity; phase 2 rescues
+  beyond the gate; phase 3 resurrects a **recently-lost id from a gallery**.
+  `reidSimilarity` prefers the FACE cue when both sides have one (weight
+  `faceWeight` 0.85, threshold via `faceMatchAffinity`) and falls back to
+  colour (`appearanceWeight` 0.6, `appearanceThreshold` 0.55). Gallery entries
+  store both cues. Toggle live via `setAppearanceReid` / `setFaceReid`; with
+  neither cue phase 1 is spatial-only.
+- **Face embedding = look-alike fix.** Colour can't separate two people in
+  the same clothes, so a same-clothes crossing swaps; the face embedding
+  (face-api FaceRecognitionNet, nobundle build sharing the one tfjs engine)
+  distinguishes them by face. A booster only — absent when facing away, so
+  colour stays the any-angle backbone. Verified headless (same-clothes
+  crossing kept-with-face / swaps-without; gallery look-alike not reclaimed)
+  and in-browser (3 nets load + run on shared engine, no two-globals crash).
 - **Two swap defences (why crossings don't trade ids).** (1) Fusing
   appearance into the phase-1 cost + optimal assignment (`assignment.ts`)
   means that within the gate identity follows clothing, not the nearest box —
@@ -161,12 +173,10 @@ frame: each slot's smoother EMAs toward its target and draws the crop.
   MoveNet head geometry, EMA glide + clamp); no committed test suite yet.
 
 ## TODO(verify) / next steps
-- **Face embedding via face-api** (planned next, user-chosen order): add a
-  FaceNet-style 128-D `computeFaceDescriptor` as a high-precision re-ID cue
-  when a face is visible, layered on top of the colour histogram (which stays
-  the any-angle backbone). face-api is already a dependency.
-- **Learned body re-ID embedding** (DeepSORT-style) for similar-clothing /
-  look-alike robustness, behind the same appearance interface.
+- **Learned whole-body re-ID embedding** (DeepSORT-style) to cover the
+  remaining gap: same-clothes look-alikes crossing while BOTH face away (face
+  cue absent, colour can't separate). Slots behind the same reid interface.
+- **Motion prediction (Kalman)** to disambiguate crossings from trajectory.
 - **In-page model selector** (MoveNet ↔ coco-ssd ↔ face-api): all three
   exist behind `HeadDetector`; the demo UI toggle + shared tfjs engine
   wiring are not built yet.

@@ -20,8 +20,20 @@
 // resolve heads from behind via shoulder geometry.
 import * as tf from '@tensorflow/tfjs';
 import * as poseDetection from '@tensorflow-models/pose-detection';
+// The **nobundle** face-api build imports the app's external @tensorflow/tfjs
+// instead of inlining its own, so face recognition shares the ONE tfjs engine
+// MoveNet already uses (avoids the "two TensorFlow globals" crash).
+import * as faceapi from '@vladmandic/face-api/dist/face-api.esm-nobundle.js';
 
-import { HeadTrackerEngine, type PoseDetectorLike } from '../core';
+import {
+  HeadTrackerEngine,
+  type PoseDetectorLike,
+  type FaceEmbedder,
+  type FaceObservation,
+} from '../core';
+
+// face-api hosts the SSD / landmark / recognition weights under /model.
+const FACE_MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model';
 
 const statusEl = document.getElementById('status') as HTMLElement;
 const captionEl = document.getElementById('sourceCaption') as HTMLElement;
@@ -33,14 +45,69 @@ const videoFileInput = document.getElementById('videoFile') as HTMLInputElement;
 const intervalInput = document.getElementById('interval') as HTMLInputElement;
 const intervalLabel = document.getElementById('intervalLabel') as HTMLElement;
 const reidInput = document.getElementById('reid') as HTMLInputElement;
+const faceReidInput = document.getElementById('faceReid') as HTMLInputElement;
 
 const tileById = new Map<number, HTMLElement>();
 
 let engine: HeadTrackerEngine | null = null;
 let poseDetector: poseDetection.PoseDetector | null = null;
+let faceModelsLoaded = false;
 let currentObjectUrl: string | null = null;
 let detectionIntervalMs = Number(intervalInput.value);
 let appearanceReid = reidInput.checked;
+let faceReid = faceReidInput.checked;
+
+/** face-api face detector + 128-D embedder, wrapping the FaceEmbedder API. */
+const faceEmbedder: FaceEmbedder = {
+  async embedFaces(source): Promise<FaceObservation[]> {
+    const engineTf = (
+      faceapi.tf as unknown as { engine: () => { startScope(): void; endScope(): void } }
+    ).engine();
+    engineTf.startScope();
+    try {
+      const results = await faceapi
+        .detectAllFaces(source, new faceapi.SsdMobilenetv1Options({ minConfidence: 0.4 }))
+        .withFaceLandmarks()
+        .withFaceDescriptors();
+      return results.map((r) => ({
+        box: {
+          x: r.detection.box.x,
+          y: r.detection.box.y,
+          width: r.detection.box.width,
+          height: r.detection.box.height,
+        },
+        descriptor: r.descriptor as Float32Array,
+      }));
+    } finally {
+      engineTf.endScope();
+    }
+  },
+};
+
+/** Load the three face-api nets once (detector + landmarks + recognition). */
+async function ensureFaceModelsLoaded(): Promise<void> {
+  if (faceModelsLoaded) return;
+  await tf.ready();
+  await faceapi.nets.ssdMobilenetv1.loadFromUri(FACE_MODEL_URL);
+  await faceapi.nets.faceLandmark68Net.loadFromUri(FACE_MODEL_URL);
+  await faceapi.nets.faceRecognitionNet.loadFromUri(FACE_MODEL_URL);
+  faceModelsLoaded = true;
+}
+
+/** Turn face re-ID on for the running engine, loading its models on demand. */
+async function activateFaceReid(): Promise<void> {
+  if (!engine) return;
+  try {
+    setStatus('Loading face-recognition models…');
+    await ensureFaceModelsLoaded();
+    if (!engine) return; // may have stopped while loading
+    engine.setFaceEmbedder(faceEmbedder);
+    engine.setFaceReid(true);
+    setStatus('Face re-ID active.');
+  } catch (err) {
+    setStatus(`Face re-ID unavailable: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
 
 function setStatus(text: string): void {
   statusEl.textContent = text;
@@ -140,6 +207,7 @@ function startEngineOnSource(): void {
     { detectionIntervalMs, appearanceReid },
   );
   engine.start(sourceVideo);
+  if (faceReid) void activateFaceReid();
 
   // Expose for ad-hoc inspection from the devtools console.
   (window as unknown as { headEngine: HeadTrackerEngine }).headEngine = engine;
@@ -214,6 +282,15 @@ intervalInput.addEventListener('input', () => {
 reidInput.addEventListener('change', () => {
   appearanceReid = reidInput.checked;
   engine?.setAppearanceReid(appearanceReid);
+});
+
+faceReidInput.addEventListener('change', () => {
+  faceReid = faceReidInput.checked;
+  if (faceReid) {
+    void activateFaceReid();
+  } else {
+    engine?.setFaceReid(false);
+  }
 });
 
 startButton.addEventListener('click', () => {
