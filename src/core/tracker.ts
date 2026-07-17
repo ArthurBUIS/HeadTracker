@@ -7,11 +7,17 @@
  * a lightweight SORT-style association plus appearance re-identification.
  *
  * Association per detection round, in three phases:
- *   1. Spatial — greedy IoU + centre-distance on the body box (large,
- *      stable overlap ⇒ a still person keeps its id).
+ *   1. Primary — a single OPTIMAL (Hungarian) assignment over a cost that
+ *      FUSES spatial overlap/proximity with clothing similarity, gated to
+ *      spatially-plausible pairs. Fusing appearance here (rather than
+ *      matching spatially first) is what stops two people crossing from
+ *      swapping ids: within the gate, identity follows clothing, not
+ *      whichever detection ended up nearest. Matches to a mutually-
+ *      occluding detection don't update the appearance signature, so a
+ *      neighbour's clothing can't contaminate it mid-crossing.
  *   2. Appearance rescue — for tracks/detections phase 1 left unmatched,
- *      match by clothing-colour similarity. Recovers an id that jumped
- *      position, e.g. two people crossing or emerging from an occlusion.
+ *      match by clothing-colour similarity beyond the spatial gate.
+ *      Recovers an id that jumped position (big move, brief occlusion).
  *   3. Gallery re-ID — a detection still unmatched is compared against a
  *      gallery of recently-lost tracks; a strong appearance match
  *      RESURRECTS that id instead of minting a new one, so a person who
@@ -28,7 +34,11 @@ import {
   blendAppearance,
   type AppearanceDescriptor,
 } from './appearance';
+import { NO_ASSIGNMENT, solveMinCostAssignment } from './assignment';
 import type { Box, HeadDetection } from './types';
+
+/** Cost marking a (track, detection) pair as forbidden in the assignment. */
+const DISALLOWED_COST = 1e8;
 
 /** A persistently-identified head across detection rounds. */
 export interface TrackedHead {
@@ -89,6 +99,27 @@ export interface TrackerConfig {
   appearanceEmaWeight: number;
   /** Rounds a lost id stays in the gallery before it's forgotten. */
   galleryMaxRounds: number;
+  /**
+   * Weight of appearance vs spatial in the primary (phase-1) match cost,
+   * in [0, 1] (spatial weight is 1 − this). High so that when two people
+   * cross, identity follows CLOTHING rather than whichever detection ended
+   * up nearest — the main swap fix. Applies only when both sides carry an
+   * appearance descriptor; otherwise the match is spatial-only.
+   */
+  appearanceWeight: number;
+  /**
+   * Detections overlapping another detection by more than this IoU are
+   * treated as mutually occluding; a track matched to one does NOT fold in
+   * its appearance (would contaminate the signature with a neighbour's
+   * clothing mid-crossing).
+   */
+  detectionOverlapFreeze: number;
+  /**
+   * Skip the appearance update when the matched detection's similarity to
+   * the track's stored signature is below this — a spatial-only match to a
+   * different-looking box shouldn't overwrite a good signature.
+   */
+  appearanceUpdateFloor: number;
 }
 
 export const DEFAULT_TRACKER_CONFIG: TrackerConfig = {
@@ -99,6 +130,9 @@ export const DEFAULT_TRACKER_CONFIG: TrackerConfig = {
   appearanceThreshold: 0.55,
   appearanceEmaWeight: 0.3,
   galleryMaxRounds: 60,
+  appearanceWeight: 0.6,
+  detectionOverlapFreeze: 0.15,
+  appearanceUpdateFloor: 0.3,
 };
 
 /** Result of one association round, for the engine to reconcile streams. */
@@ -169,10 +203,11 @@ export class HeadIdentityTracker {
       this.tracks.filter((t) => t.confirmed).map((t) => t.id),
     );
     const detBoxes = detections.map(associationBoxOf);
+    const occludedDet = this.computeOccludedDetections(detBoxes);
     const trackMatched = new Array<boolean>(this.tracks.length).fill(false);
     const detMatched = new Array<boolean>(detections.length).fill(false);
 
-    this.matchSpatial(detections, detBoxes, trackMatched, detMatched);
+    this.matchPrimary(detections, detBoxes, occludedDet, trackMatched, detMatched);
     this.matchByAppearance(detections, trackMatched, detMatched);
     this.reidFromGallery(detections, detMatched);
 
@@ -199,33 +234,85 @@ export class HeadIdentityTracker {
     return this.tracks.filter((t) => t.confirmed);
   }
 
-  /** Phase 1: greedy spatial match on the association boxes. */
-  private matchSpatial(
+  /**
+   * Phase 1: optimal match on a combined spatial + appearance cost.
+   *
+   * Every spatially-gated (track, detection) pair gets a cost fusing box
+   * overlap/proximity with clothing similarity; the Hungarian solver then
+   * picks the globally cheapest assignment. Fusing appearance in — instead
+   * of matching spatially first — is what stops a crossing from handing a
+   * track to whichever detection ended up nearest. Matches to a
+   * mutually-occluding detection don't update the appearance signature.
+   */
+  private matchPrimary(
     detections: HeadDetection[],
     detBoxes: Box[],
+    occludedDet: boolean[],
     trackMatched: boolean[],
     detMatched: boolean[],
   ): void {
-    const pairs: { ti: number; di: number; iou: number; distance: number }[] = [];
-    for (let ti = 0; ti < this.tracks.length; ti += 1) {
-      for (let di = 0; di < detections.length; di += 1) {
-        const trackBox = this.tracks[ti].assocBox;
-        const detBox = detBoxes[di];
-        const iou = intersectionOverUnion(trackBox, detBox);
-        const distance = centerDistance(trackBox, detBox);
-        const gate = this.config.centerDistanceGateFactor * averageBoxSize(trackBox, detBox);
-        if (iou >= this.config.iouThreshold || distance <= gate) {
-          pairs.push({ ti, di, iou, distance });
+    const nT = this.tracks.length;
+    const nD = detections.length;
+    if (nT === 0 || nD === 0) return;
+
+    const cost: number[][] = [];
+    for (let ti = 0; ti < nT; ti += 1) {
+      const trackBox = this.tracks[ti].assocBox;
+      const row: number[] = [];
+      for (let di = 0; di < nD; di += 1) {
+        row.push(this.pairCost(this.tracks[ti], trackBox, detections[di], detBoxes[di]));
+      }
+      cost.push(row);
+    }
+
+    const assignment = solveMinCostAssignment(cost, DISALLOWED_COST);
+    for (let ti = 0; ti < nT; ti += 1) {
+      const di = assignment[ti];
+      if (di === NO_ASSIGNMENT) continue;
+      trackMatched[ti] = true;
+      detMatched[di] = true;
+      const sim =
+        this.tracks[ti].appearance && detections[di].appearance
+          ? appearanceSimilarity(this.tracks[ti].appearance, detections[di].appearance)
+          : 1;
+      const updateAppearance = !occludedDet[di] && sim >= this.config.appearanceUpdateFloor;
+      this.applyMatch(this.tracks[ti], detections[di], updateAppearance);
+    }
+  }
+
+  /** Combined cost of pairing a track with a detection; DISALLOWED if ungated. */
+  private pairCost(
+    track: TrackedHead,
+    trackBox: Box,
+    detection: HeadDetection,
+    detBox: Box,
+  ): number {
+    const iou = intersectionOverUnion(trackBox, detBox);
+    const distance = centerDistance(trackBox, detBox);
+    const gate = this.config.centerDistanceGateFactor * averageBoxSize(trackBox, detBox);
+    if (iou < this.config.iouThreshold && distance > gate) return DISALLOWED_COST;
+
+    const spatialAffinity = Math.max(iou, gate > 0 ? Math.max(0, 1 - distance / gate) : 0);
+    if (track.appearance && detection.appearance) {
+      const appearanceAffinity = appearanceSimilarity(track.appearance, detection.appearance);
+      const w = this.config.appearanceWeight;
+      return 1 - (w * appearanceAffinity + (1 - w) * spatialAffinity);
+    }
+    return 1 - spatialAffinity;
+  }
+
+  /** Flag detections that overlap another detection (mutual occlusion). */
+  private computeOccludedDetections(detBoxes: Box[]): boolean[] {
+    const occluded = new Array<boolean>(detBoxes.length).fill(false);
+    for (let i = 0; i < detBoxes.length; i += 1) {
+      for (let j = i + 1; j < detBoxes.length; j += 1) {
+        if (intersectionOverUnion(detBoxes[i], detBoxes[j]) > this.config.detectionOverlapFreeze) {
+          occluded[i] = true;
+          occluded[j] = true;
         }
       }
     }
-    pairs.sort((p, q) => (q.iou - p.iou) || (p.distance - q.distance));
-    for (const pair of pairs) {
-      if (trackMatched[pair.ti] || detMatched[pair.di]) continue;
-      trackMatched[pair.ti] = true;
-      detMatched[pair.di] = true;
-      this.applyMatch(this.tracks[pair.ti], detections[pair.di]);
-    }
+    return occluded;
   }
 
   /** Phase 2: rescue spatially-unmatched pairs by appearance similarity. */
@@ -295,7 +382,11 @@ export class HeadIdentityTracker {
     this.gallery = this.gallery.filter((e) => e.age <= this.config.galleryMaxRounds);
   }
 
-  private applyMatch(track: TrackedHead, detection: HeadDetection): void {
+  private applyMatch(
+    track: TrackedHead,
+    detection: HeadDetection,
+    updateAppearance = true,
+  ): void {
     const { cx, cy } = centerOf(detection);
     track.assocBox = associationBoxOf(detection);
     track.centerX = cx;
@@ -303,7 +394,9 @@ export class HeadIdentityTracker {
     track.size = Math.max(detection.width, detection.height);
     track.hits += 1;
     track.misses = 0;
-    track.appearance = this.mergeAppearance(track.appearance, detection.appearance);
+    if (updateAppearance) {
+      track.appearance = this.mergeAppearance(track.appearance, detection.appearance);
+    }
     if (!track.confirmed && track.hits >= this.config.minHits) track.confirmed = true;
   }
 

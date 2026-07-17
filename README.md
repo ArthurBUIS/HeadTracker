@@ -38,14 +38,23 @@ region (`appearance.ts`) — essentially *what colour their clothes are*.
 Chosen over a face embedding (FaceNet) because it works from **any angle**,
 including people turned away, and needs no extra model.
 
-Association runs in three phases (`tracker.ts`): (1) spatial on the body
-box, (2) **appearance rescue** — matches a track and detection that phase 1
-left unmatched (e.g. a big jump out of an occlusion), (3) **gallery re-ID** —
-a detection matching a recently-*lost* track's signature **resurrects that
-id** instead of minting a new one, so someone who left and returned reclaims
-their number. Lost ids linger for `reidMemorySeconds` (default 30 s). All
-verified headless, including the contrast case (re-ID off → new id) and that
-two differently-dressed people are never merged.
+Association runs in three phases (`tracker.ts`): (1) **primary** — one
+**optimal (Hungarian) assignment** over a cost that **fuses** spatial
+overlap/proximity with clothing similarity, gated to plausible pairs;
+(2) **appearance rescue** — matches a track and detection phase 1 left
+unmatched beyond the spatial gate (a big jump out of an occlusion);
+(3) **gallery re-ID** — a detection matching a recently-*lost* track's
+signature **resurrects that id** instead of minting a new one, so someone who
+left and returned reclaims their number (lingers `reidMemorySeconds`, 30 s).
+
+Fusing appearance into phase 1 (rather than matching spatially first) is what
+stops two people **crossing** from swapping ids: within the gate, identity
+follows clothing, not whichever detection ended up nearest. Matches to a
+mutually-occluding detection also skip the appearance update, so a
+neighbour's clothing can't contaminate a signature mid-crossing. All verified
+headless, including the crossing swap (prevented with fusion, happens
+without), the contamination guard, and that differently-dressed people are
+never merged.
 
 ### Losing and regaining a head
 
@@ -135,7 +144,8 @@ HeadTracker/
 │   ├── core/               the reusable algorithm (portals-bound)
 │   │   ├── types.ts            shared value types + detector interface
 │   │   ├── smoothing.ts        time-constant EMA (from person_tracking.py)
-│   │   ├── tracker.ts          identity association (spatial + appearance + gallery)
+│   │   ├── tracker.ts          identity association (fused-cost + appearance + gallery)
+│   │   ├── assignment.ts       Hungarian optimal min-cost assignment
 │   │   ├── appearance.ts       torso colour-histogram descriptors for re-ID
 │   │   ├── moveNetDetector.ts  MoveNet pose → head boxes from keypoints (active)
 │   │   ├── cocoSsdDetector.ts  coco-ssd body → head boxes (kept for selector)
@@ -150,12 +160,11 @@ HeadTracker/
 ## Known prototype limits
 
 - Appearance re-ID uses clothing **colour**, so it's weak when people wear
-  similar colours or under strong lighting changes. `appearanceThreshold`
-  (in `tracker.ts`) trades wrong-merges against churn; a learned embedding
-  would be more discriminative behind the same interface.
-- **Active crossings can still swap ids.** Phase 1 spatial matching runs
-  before appearance, so when two people overlap and part, labels can trade.
-  Folding appearance into the phase-1 cost (not just as a rescue) would help.
+  similar colours or under strong lighting changes — the case where crossings
+  can still swap (colour can't disambiguate look-alikes). A learned
+  embedding (person re-ID, or a FaceNet-style face descriptor when a face is
+  visible) behind the same interface is the next step. `appearanceWeight` /
+  `appearanceThreshold` (in `tracker.ts`) tune the tradeoff.
 - The facing-away head estimate is shoulder geometry (a fixed rise above the
   shoulder line), so it's approximate for unusual postures — tune
   `shoulderHeadScale` / `shoulderHeadRise` in `moveNetDetector.ts`.

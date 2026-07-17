@@ -60,6 +60,8 @@ export {
   type AppearanceDescriptor,
 } from './appearance';
 
+export { solveMinCostAssignment, NO_ASSIGNMENT } from './assignment';
+
 export {
   HeadCropSmoother,
   DEFAULT_HEAD_CROP_CONFIG,

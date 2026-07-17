@@ -24,7 +24,7 @@ people-counting. The reusable algorithm is `src/core`; `src/demo` +
    │        │                                        ▼                      │
    │   + sampleAppearance (torso HSV hist)   drawImage(source → 200×200)     │
    │  HeadIdentityTracker.update()                   │                      │
-   │  (spatial → appearance → gallery re-ID)         ▼                      │
+   │  (fused Hungarian → rescue → gallery)           ▼                      │
    │        │  active tracks + removedIds    per-id canvas.captureStream()  │
    │        └──────── reconcileSlots() ──────────────┘   → onHeadStreamAdded/Removed
    └────────────────────────────────────────────────────────────────────────┘
@@ -38,7 +38,8 @@ detections.
 |------|----------------|-------------|
 | `src/core/types.ts` | Shared value types + the injectable detector interface. | `HeadDetection`, `HeadDetector`, `FrameSource`, `FrameSize` |
 | `src/core/smoothing.ts` | Time-constant EMA (ported from VideoStitcher `person_tracking.py`, generalised to measured `dt`). | `emaWeightForTimeConstant`, `emaStep`, `clamp` |
-| `src/core/tracker.ts` | **Identity: which box is which.** 3-phase association (spatial on body box → appearance rescue → gallery re-ID) + birth/death; `setMaxMisses`, `setGalleryMaxRounds`. | `HeadIdentityTracker`, `TrackedHead`, `TrackerConfig`, `DEFAULT_TRACKER_CONFIG` |
+| `src/core/tracker.ts` | **Identity: which box is which.** 3-phase association (fused spatial+appearance Hungarian match → appearance rescue → gallery re-ID) + contamination guard + birth/death; `setMaxMisses`, `setGalleryMaxRounds`. | `HeadIdentityTracker`, `TrackedHead`, `TrackerConfig`, `DEFAULT_TRACKER_CONFIG` |
+| `src/core/assignment.ts` | Hungarian (Kuhn–Munkres) min-cost assignment; rectangular via padding, forbidden pairs via a disallow cost. | `solveMinCostAssignment`, `NO_ASSIGNMENT` |
 | `src/core/appearance.ts` | Torso HSV colour-histogram descriptor + intersection similarity + EMA blend. DOM-free (operates on RGBA data). | `computeHsvHistogram`, `appearanceSimilarity`, `blendAppearance`, `AppearanceDescriptor` |
 | `src/core/moveNetDetector.ts` | **Active detector.** MoveNet pose keypoints → head box (face keypoints, else shoulder geometry) + body box. | `MoveNetHeadDetector`, `PoseDetectorLike`, `DEFAULT_MOVENET_DETECTOR_CONFIG` |
 | `src/core/cocoSsdDetector.ts` | Alt detector: coco-ssd body boxes → top-centre head boxes. | `CocoSsdHeadDetector`, `CocoSsdModelLike`, `DEFAULT_COCO_SSD_DETECTOR_CONFIG` |
@@ -97,16 +98,24 @@ frame: each slot's smoother EMAs toward its target and draws the crop.
   2.5 × avg box size), so a box that moved far still matches; kept modest so
   two close people aren't merged.
 - **Appearance re-identification (3-phase association).** Each detection gets
-  an HSV torso colour histogram (`sampleAppearance` → `computeHsvHistogram`);
-  the tracker matches spatially first, then rescues unmatched pairs by
-  appearance, then resurrects a **recently-lost id from a gallery** when a
-  detection's signature matches — so a person who left/was occluded reclaims
-  their number instead of churning. `appearanceThreshold` 0.55 gates both
-  appearance phases; gallery lifetime = `reidMemorySeconds` (30) / interval.
-  Toggle live via `setAppearanceReid`; when off (or descriptor absent, e.g.
-  face-api) phases 2–3 no-op → pure spatial. Verified headless (gallery
-  reclaim vs new-id contrast, big-jump rescue, no-merge of different clothes).
-  Colour is angle-agnostic (works facing away), unlike a FaceNet embedding.
+  an HSV torso colour histogram (`sampleAppearance` → `computeHsvHistogram`).
+  Phase 1 is a single **optimal (Hungarian) assignment** over a cost that
+  **fuses** spatial affinity with clothing similarity (`appearanceWeight`
+  0.6, spatial-gated); phase 2 rescues beyond the gate by appearance; phase 3
+  resurrects a **recently-lost id from a gallery**. `appearanceThreshold`
+  0.55 gates phases 2–3; gallery lifetime = `reidMemorySeconds` (30) /
+  interval. Toggle live via `setAppearanceReid`; when off (or descriptor
+  absent, e.g. face-api) phase 1 is spatial-only and 2–3 no-op.
+- **Two swap defences (why crossings don't trade ids).** (1) Fusing
+  appearance into the phase-1 cost + optimal assignment (`assignment.ts`)
+  means that within the gate identity follows clothing, not the nearest box —
+  so greedy's crossing swap can't happen. (2) A match to a detection that
+  overlaps another (`detectionOverlapFreeze` IoU) skips the appearance EMA
+  update (also skipped below `appearanceUpdateFloor` similarity), so a
+  neighbour's clothing can't contaminate a signature mid-crossing. Verified
+  headless (crossing swap prevented-with-fusion / happens-without, guard
+  preserves re-ID, Hungarian incl. optimal-beats-greedy). Limit: colour can't
+  separate look-alikes — a learned/face embedding is the next step.
 - **Detection interval is adjustable 200–2000 ms** (`setDetectionInterval`,
   demo slider), default 500. **Coast time is held constant**: the engine sets
   the tracker's `maxMisses = round(trackCoastSeconds / interval)` (default
@@ -152,10 +161,12 @@ frame: each slot's smoother EMAs toward its target and draws the crop.
   MoveNet head geometry, EMA glide + clamp); no committed test suite yet.
 
 ## TODO(verify) / next steps
-- **Fold appearance into phase-1 cost** so active crossings don't swap ids
-  (today appearance is only a rescue/gallery step after spatial matching).
-- **Stronger descriptor** than a colour histogram (learned embedding, or
-  FaceNet when a face is visible) for similar-clothing / lighting robustness.
+- **Face embedding via face-api** (planned next, user-chosen order): add a
+  FaceNet-style 128-D `computeFaceDescriptor` as a high-precision re-ID cue
+  when a face is visible, layered on top of the colour histogram (which stays
+  the any-angle backbone). face-api is already a dependency.
+- **Learned body re-ID embedding** (DeepSORT-style) for similar-clothing /
+  look-alike robustness, behind the same appearance interface.
 - **In-page model selector** (MoveNet ↔ coco-ssd ↔ face-api): all three
   exist behind `HeadDetector`; the demo UI toggle + shared tfjs engine
   wiring are not built yet.
