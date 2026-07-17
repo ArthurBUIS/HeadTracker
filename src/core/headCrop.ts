@@ -7,20 +7,30 @@
  * crop side EMA toward the latest target using the time-constant filter
  * from smoothing.ts (the person_tracking.py technique).
  *
- * Two time constants, mirroring person_tracking.py's track-vs-drift split:
- *   - `lockSeconds`  — snappier, used while the head is being seen.
- *   - `holdSeconds`  — slower, used on missed detections so a brief
- *                      occlusion doesn't make the view lurch.
+ * Position and size (zoom) are smoothed on SEPARATE time constants, and
+ * this matters: the crop centre should track the head quickly, but the crop
+ * *side* (which is resampled into the fixed 200x200 output) must be very
+ * stable — otherwise the noisy per-detection head-size estimate (and the
+ * jump when the detector switches between its face-keypoint and shoulder
+ * estimates) shows up as the view zooming in and out. So:
+ *   - `lockSeconds` / `holdSeconds` — position, snappy (seen) vs slow (lost).
+ *   - `sizeSeconds` — the zoom, deliberately long so it stays near-constant
+ *     and only self-calibrates slowly if the person really changes distance.
  */
 
 import { clamp, emaStep, emaWeightForTimeConstant } from './smoothing';
 import type { FrameSize } from './types';
 
 export interface HeadCropConfig {
-  /** EMA time constant while the head is actively detected (seconds). */
+  /** EMA time constant for crop POSITION while the head is detected (s). */
   lockSeconds: number;
-  /** EMA time constant while the head's detection is missing (seconds). */
+  /** EMA time constant for crop POSITION while detection is missing (s). */
   holdSeconds: number;
+  /**
+   * EMA time constant for crop SIZE / zoom (seconds). Long by design so the
+   * output framing holds steady instead of pulsing with head-size noise.
+   */
+  sizeSeconds: number;
   /**
    * Crop side length as a multiple of head size, before clamping. >1
    * leaves headroom/shoulders around the head. The square source region
@@ -35,6 +45,7 @@ export interface HeadCropConfig {
 export const DEFAULT_HEAD_CROP_CONFIG: HeadCropConfig = {
   lockSeconds: 0.5,
   holdSeconds: 1.5,
+  sizeSeconds: 4.0,
   paddingFactor: 2.0,
   minCropSide: 80,
 };
@@ -84,11 +95,14 @@ export class HeadCropSmoother {
     dtSeconds: number,
     isSeen: boolean,
   ): void {
-    const tau = isSeen ? this.config.lockSeconds : this.config.holdSeconds;
-    const weight = emaWeightForTimeConstant(dtSeconds, tau);
-    this.centerX = emaStep(this.centerX, targetCenterX, weight);
-    this.centerY = emaStep(this.centerY, targetCenterY, weight);
-    this.side = emaStep(this.side, this.sideForHeadSize(targetHeadSize), weight);
+    const posTau = isSeen ? this.config.lockSeconds : this.config.holdSeconds;
+    const posWeight = emaWeightForTimeConstant(dtSeconds, posTau);
+    this.centerX = emaStep(this.centerX, targetCenterX, posWeight);
+    this.centerY = emaStep(this.centerY, targetCenterY, posWeight);
+
+    // Size uses its own long time constant so the zoom stays steady.
+    const sizeWeight = emaWeightForTimeConstant(dtSeconds, this.config.sizeSeconds);
+    this.side = emaStep(this.side, this.sideForHeadSize(targetHeadSize), sizeWeight);
   }
 
   /**

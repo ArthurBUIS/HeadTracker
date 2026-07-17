@@ -129,6 +129,13 @@ frame: each slot's smoother EMAs toward its target and draws the crop.
 - **EMA uses measured `dt`** from rAF timestamps, not a fixed fps, so glide
   speed is right even when the render loop stutters; a long stall snaps
   (weight clamped to 1) instead of overshooting.
+- **Position and zoom smooth on separate time constants.** Crop centre uses
+  `lockSeconds`/`holdSeconds` (snappy); crop side uses `sizeSeconds` (4 s,
+  long) so the noisy per-detection head-size estimate — and the jump when the
+  detector switches face↔shoulder — doesn't read as the view zooming in/out.
+  Head geometry is initialised on the first observation, so the long size tau
+  doesn't cause a slow zoom-in at stream start. Verified headless (zoom swing
+  37px→5.6px under alternating head sizes; position still tracks fast).
 - **tfjs memory:** the face-api detector wraps each pass in
   `tf.engine().startScope()/endScope()` (from portals' FaceDetection.jsx) to
   avoid a WebGL leak on the interval; coco-ssd manages its own tensors.

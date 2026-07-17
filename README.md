@@ -21,7 +21,7 @@ Four stages, two clocks:
 |-------|------|--------------|
 | **Detect** | every **0.2–2 s** (adjustable) | MoveNet MultiPose locates each person's **head** from keypoints (nose/eyes/ears), falling back to shoulder geometry when the face isn't visible — so people **turned away from the camera are still tracked**, without the body-box jitter. |
 | **Track** | each detection | (1) greedy IoU **+ centre-distance** on the body box, (2) **appearance rescue**, (3) **gallery re-ID** → a stable integer id per participant, with birth (`minHits`) / death (interval-scaled `maxMisses`). **This is the "which box is which" part.** |
-| **Smooth + crop** | every render frame (~30 fps) | per-id EMA glides the 200×200 crop toward the head; motion stays smooth between the 2 s detections. |
+| **Smooth + crop** | every render frame (~30 fps) | per-id EMA glides the 200×200 crop toward the head. Position and zoom smooth on **separate** time constants — position snappy, zoom (`sizeSeconds`, long) near-constant so the framing doesn't pulse with head-size noise. |
 | **Output** | continuous | one `canvas.captureStream()` per id. |
 
 The smoothing is the continuous-lowpass EMA from VideoStitcher's
