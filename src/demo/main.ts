@@ -99,15 +99,18 @@ async function ensureFaceModelsLoaded(): Promise<void> {
 async function activateFaceReid(): Promise<void> {
   if (!engine) return;
   try {
+    setFaceState('loading…');
     setStatus('Loading face-recognition models…');
     await ensureFaceModelsLoaded();
     if (!engine) return; // may have stopped while loading
     engine.setFaceEmbedder(faceEmbedder);
     engine.setFaceReid(true);
+    setFaceState(`active (${tf.getBackend()})`);
     // eslint-disable-next-line no-console
     console.log(`[HeadTracker] face models loaded — tf backend: ${tf.getBackend()}`);
     setStatus('Face re-ID active.');
   } catch (err) {
+    setFaceState('FAILED to load');
     // eslint-disable-next-line no-console
     console.error('[HeadTracker] face model load failed:', err);
     setStatus(`Face re-ID unavailable: ${err instanceof Error ? err.message : String(err)}`);
@@ -116,6 +119,16 @@ async function activateFaceReid(): Promise<void> {
 
 function setStatus(text: string): void {
   statusEl.textContent = text;
+}
+
+let faceState = 'off';
+let lastDiagLine = '';
+function renderDebug(): void {
+  debugEl.textContent = `face models: ${faceState}   |   ${lastDiagLine || '(waiting for detection…)'}`;
+}
+function setFaceState(state: string): void {
+  faceState = state;
+  renderDebug();
 }
 
 function formatSeconds(ms: number): string {
@@ -165,6 +178,15 @@ function removeTile(id: number): void {
 async function ensureModelLoaded(): Promise<void> {
   if (poseDetector) return;
   setStatus('Loading MoveNet MultiPose model…');
+  // Force the webgl backend before any model loads. face-api's landmark /
+  // recognition nets are unreliable on webgpu (they can hang, which stalls
+  // the detection loop and stops streams appearing); webgl is the tested
+  // path for MoveNet AND face-api, and they share this one engine.
+  try {
+    await tf.setBackend('webgl');
+  } catch {
+    /* fall back to whatever backend is available */
+  }
   await tf.ready();
   poseDetector = await poseDetection.createDetector(poseDetection.SupportedModels.MoveNet, {
     modelType: poseDetection.movenet.modelType.MULTIPOSE_LIGHTNING,
@@ -209,14 +231,14 @@ function startEngineOnSource(): void {
         setStatus(`Tracking ${tileById.size} head(s).`);
       },
       onDiagnostics: (d) => {
-        const line =
-          `dets ${d.detections} · tracks ${d.activeTracks} · ` +
+        lastDiagLine =
+          `round ${d.round} · dets ${d.detections} · tracks ${d.activeTracks} · ` +
           `appearance ${d.appearanceReidEnabled ? 'on' : 'off'} · ` +
           `face ${d.faceReidActive ? 'on' : 'off'} · ` +
           `faces ${d.facesDetected}→${d.facesAttached} attached`;
-        debugEl.textContent = `diagnostics: ${line}`;
+        renderDebug();
         // eslint-disable-next-line no-console
-        console.log(`[HeadTracker] ${line}`);
+        console.log(`[HeadTracker] ${lastDiagLine}`);
       },
     },
     { detectionIntervalMs, appearanceReid },
@@ -305,6 +327,7 @@ faceReidInput.addEventListener('change', () => {
     void activateFaceReid();
   } else {
     engine?.setFaceReid(false);
+    setFaceState('off');
   }
 });
 

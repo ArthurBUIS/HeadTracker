@@ -91,6 +91,12 @@ export interface HeadTrackerEngineConfig {
    */
   reidMemorySeconds: number;
   /**
+   * Max time to wait for the injected face embedder each round before
+   * giving up on it for that round. A hard cap so a slow/hanging face model
+   * can never stall the detection loop (which would stop streams appearing).
+   */
+  faceEmbedTimeoutMs: number;
+  /**
    * When a head is lost, its stream is kept alive frozen on the last crop
    * for this many seconds (so a brief loss doesn't blank it and a return
    * resumes it seamlessly) before it's finally stopped. Aligns with
@@ -114,6 +120,7 @@ export const DEFAULT_ENGINE_CONFIG: HeadTrackerEngineConfig = {
   appearanceReid: true,
   faceReid: false,
   reidMemorySeconds: 30,
+  faceEmbedTimeoutMs: 3000,
   lostStreamLingerSeconds: 30,
   outputFps: 30,
   tracker: DEFAULT_TRACKER_CONFIG,
@@ -122,6 +129,8 @@ export const DEFAULT_ENGINE_CONFIG: HeadTrackerEngineConfig = {
 
 /** Per-detection-round diagnostics for debugging the re-ID pipeline. */
 export interface DetectionDiagnostics {
+  /** Monotonic round counter, so a frozen readout is obvious. */
+  round: number;
   /** Heads the detector returned this round. */
   detections: number;
   /** Confirmed, alive tracks after this round. */
@@ -200,6 +209,9 @@ export class HeadTrackerEngine {
 
   /** Optional face detector+embedder for face-based re-ID (injected). */
   private faceEmbedder: FaceEmbedder | null = null;
+
+  /** Monotonic detection-round counter for diagnostics. */
+  private roundCounter = 0;
 
   constructor(
     detector: HeadDetector,
@@ -431,6 +443,16 @@ export class HeadTrackerEngine {
    * to the head box that contains it. Failures are swallowed (face re-ID is
    * a booster; detection/tracking must continue without it).
    */
+  /** Resolve `promise`, or `null` if `ms` elapses first (never rejects). */
+  private withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
+    return Promise.race([
+      promise.catch(() => null),
+      new Promise<null>((resolve) => {
+        setTimeout(() => resolve(null), ms);
+      }),
+    ]);
+  }
+
   private async attachFaceDescriptors(
     detections: HeadDetection[],
   ): Promise<{ detected: number; attached: number }> {
@@ -439,7 +461,15 @@ export class HeadTrackerEngine {
       return { detected: 0, attached: 0 };
     }
     try {
-      const faces = await this.faceEmbedder.embedFaces(source);
+      const faces = await this.withTimeout(
+        this.faceEmbedder.embedFaces(source),
+        this.config.faceEmbedTimeoutMs,
+      );
+      if (faces === null) {
+        // eslint-disable-next-line no-console
+        console.warn('[HeadTracker] face embed timed out; skipping this round');
+        return { detected: 0, attached: 0 };
+      }
       if (faces.length === 0) return { detected: 0, attached: 0 };
       const headBoxes: Box[] = detections.map((d) => ({
         x: d.x,
@@ -485,7 +515,9 @@ export class HeadTrackerEngine {
       }
       const { active, removedIds } = this.tracker.update(detections);
       this.reconcileSlots(active, removedIds);
+      this.roundCounter += 1;
       this.callbacks.onDiagnostics?.({
+        round: this.roundCounter,
         detections: detections.length,
         activeTracks: active.length,
         appearanceReidEnabled: this.config.appearanceReid,
