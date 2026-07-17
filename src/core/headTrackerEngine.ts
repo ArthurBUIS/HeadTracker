@@ -120,9 +120,27 @@ export const DEFAULT_ENGINE_CONFIG: HeadTrackerEngineConfig = {
   crop: {},
 };
 
+/** Per-detection-round diagnostics for debugging the re-ID pipeline. */
+export interface DetectionDiagnostics {
+  /** Heads the detector returned this round. */
+  detections: number;
+  /** Confirmed, alive tracks after this round. */
+  activeTracks: number;
+  /** Whether colour appearance re-ID is enabled. */
+  appearanceReidEnabled: boolean;
+  /** Whether face re-ID ran this round (enabled AND an embedder is set). */
+  faceReidActive: boolean;
+  /** Faces the embedder returned this round. */
+  facesDetected: number;
+  /** Of those, how many were matched to a head and attached. */
+  facesAttached: number;
+}
+
 export interface HeadTrackerCallbacks {
   /** A newly-confirmed participant got a stream. Mount it. */
   onHeadStreamAdded?: (head: HeadStream) => void;
+  /** Fired once per detection round with counts, for debugging. */
+  onDiagnostics?: (diagnostics: DetectionDiagnostics) => void;
   /**
    * A participant's head was lost, but the stream is kept alive frozen on
    * its last position (see `lostStreamLingerSeconds`). Not unmounted — a
@@ -413,12 +431,16 @@ export class HeadTrackerEngine {
    * to the head box that contains it. Failures are swallowed (face re-ID is
    * a booster; detection/tracking must continue without it).
    */
-  private async attachFaceDescriptors(detections: HeadDetection[]): Promise<void> {
+  private async attachFaceDescriptors(
+    detections: HeadDetection[],
+  ): Promise<{ detected: number; attached: number }> {
     const source = this.source;
-    if (!source || !this.faceEmbedder || detections.length === 0) return;
+    if (!source || !this.faceEmbedder || detections.length === 0) {
+      return { detected: 0, attached: 0 };
+    }
     try {
       const faces = await this.faceEmbedder.embedFaces(source);
-      if (faces.length === 0) return;
+      if (faces.length === 0) return { detected: 0, attached: 0 };
       const headBoxes: Box[] = detections.map((d) => ({
         x: d.x,
         y: d.y,
@@ -429,13 +451,19 @@ export class HeadTrackerEngine {
         faces.map((f) => f.box),
         headBoxes,
       );
+      let attached = 0;
       for (let fi = 0; fi < faces.length; fi += 1) {
         const di = faceToHead[fi];
-        if (di >= 0) detections[di].faceDescriptor = faces[fi].descriptor;
+        if (di >= 0) {
+          detections[di].faceDescriptor = faces[fi].descriptor;
+          attached += 1;
+        }
       }
+      return { detected: faces.length, attached };
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error('[HeadTracker] face embedding failed:', err);
+      return { detected: 0, attached: 0 };
     }
   }
 
@@ -451,11 +479,20 @@ export class HeadTrackerEngine {
           detection.appearance = this.sampleAppearance(detection, frame);
         }
       }
+      let faceStats = { detected: 0, attached: 0 };
       if (this.isFaceReidActive()) {
-        await this.attachFaceDescriptors(detections);
+        faceStats = await this.attachFaceDescriptors(detections);
       }
       const { active, removedIds } = this.tracker.update(detections);
       this.reconcileSlots(active, removedIds);
+      this.callbacks.onDiagnostics?.({
+        detections: detections.length,
+        activeTracks: active.length,
+        appearanceReidEnabled: this.config.appearanceReid,
+        faceReidActive: this.isFaceReidActive(),
+        facesDetected: faceStats.detected,
+        facesAttached: faceStats.attached,
+      });
     } catch (err) {
       // Detection failures must not kill the render loop; log and move on.
       // eslint-disable-next-line no-console

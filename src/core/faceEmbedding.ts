@@ -65,32 +65,33 @@ export function blendFace(
   return out;
 }
 
-/** Fraction of `inner` that lies inside `outer` (0–1). */
-function containment(inner: Box, outer: Box): number {
-  const interW = Math.max(0, Math.min(inner.x + inner.width, outer.x + outer.width) - Math.max(inner.x, outer.x));
-  const interH = Math.max(0, Math.min(inner.y + inner.height, outer.y + outer.height) - Math.max(inner.y, outer.y));
-  const innerArea = inner.width * inner.height;
-  return innerArea <= 0 ? 0 : (interW * interH) / innerArea;
+function boxCenter(box: Box): { x: number; y: number } {
+  return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
 }
 
 /**
- * Assign each face box to the head box that best contains it (a face sits
- * inside its head). Greedy one-to-one by containment; returns, per face, the
- * index of its head box or -1 (`minContainment` default 0.5).
+ * Assign each face box to the head box it belongs to. Matched on the FACE
+ * CENTRE (robust to the face box and head box having similar sizes / being
+ * offset — plain area-containment silently failed there): a face pairs with
+ * a head if its centre is inside the head box, or within 0.75× the head's
+ * size of the head centre. Greedy one-to-one, preferring centre-inside then
+ * nearest. Returns, per face, its head index or -1.
  */
-export function matchFacesToBoxes(
-  faceBoxes: Box[],
-  headBoxes: Box[],
-  minContainment = 0.5,
-): number[] {
-  const pairs: { fi: number; hi: number; score: number }[] = [];
+export function matchFacesToBoxes(faceBoxes: Box[], headBoxes: Box[]): number[] {
+  const pairs: { fi: number; hi: number; inside: boolean; distance: number }[] = [];
   for (let fi = 0; fi < faceBoxes.length; fi += 1) {
+    const fc = boxCenter(faceBoxes[fi]);
     for (let hi = 0; hi < headBoxes.length; hi += 1) {
-      const score = containment(faceBoxes[fi], headBoxes[hi]);
-      if (score >= minContainment) pairs.push({ fi, hi, score });
+      const hb = headBoxes[hi];
+      const inside = fc.x >= hb.x && fc.x <= hb.x + hb.width && fc.y >= hb.y && fc.y <= hb.y + hb.height;
+      const hc = boxCenter(hb);
+      const distance = Math.hypot(fc.x - hc.x, fc.y - hc.y);
+      const gate = 0.75 * Math.max(hb.width, hb.height);
+      if (inside || distance <= gate) pairs.push({ fi, hi, inside, distance });
     }
   }
-  pairs.sort((p, q) => q.score - p.score);
+  pairs.sort((p, q) => Number(q.inside) - Number(p.inside) || p.distance - q.distance);
+
   const faceToHead = new Array<number>(faceBoxes.length).fill(-1);
   const headTaken = new Array<boolean>(headBoxes.length).fill(false);
   for (const pair of pairs) {

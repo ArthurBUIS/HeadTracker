@@ -87,4 +87,5 @@ export {
   type HeadStream,
   type HeadTrackerEngineConfig,
   type HeadTrackerCallbacks,
+  type DetectionDiagnostics,
 } from './headTrackerEngine';

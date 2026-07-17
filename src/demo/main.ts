@@ -36,6 +36,7 @@ import {
 const FACE_MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model';
 
 const statusEl = document.getElementById('status') as HTMLElement;
+const debugEl = document.getElementById('debug') as HTMLElement;
 const captionEl = document.getElementById('sourceCaption') as HTMLElement;
 const gridEl = document.getElementById('grid') as HTMLElement;
 const sourceVideo = document.getElementById('source') as HTMLVideoElement;
@@ -66,7 +67,7 @@ const faceEmbedder: FaceEmbedder = {
     engineTf.startScope();
     try {
       const results = await faceapi
-        .detectAllFaces(source, new faceapi.SsdMobilenetv1Options({ minConfidence: 0.4 }))
+        .detectAllFaces(source, new faceapi.SsdMobilenetv1Options({ minConfidence: 0.3 }))
         .withFaceLandmarks()
         .withFaceDescriptors();
       return results.map((r) => ({
@@ -103,8 +104,12 @@ async function activateFaceReid(): Promise<void> {
     if (!engine) return; // may have stopped while loading
     engine.setFaceEmbedder(faceEmbedder);
     engine.setFaceReid(true);
+    // eslint-disable-next-line no-console
+    console.log(`[HeadTracker] face models loaded — tf backend: ${tf.getBackend()}`);
     setStatus('Face re-ID active.');
   } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[HeadTracker] face model load failed:', err);
     setStatus(`Face re-ID unavailable: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
@@ -202,6 +207,16 @@ function startEngineOnSource(): void {
       onHeadStreamRemoved: (id) => {
         removeTile(id);
         setStatus(`Tracking ${tileById.size} head(s).`);
+      },
+      onDiagnostics: (d) => {
+        const line =
+          `dets ${d.detections} · tracks ${d.activeTracks} · ` +
+          `appearance ${d.appearanceReidEnabled ? 'on' : 'off'} · ` +
+          `face ${d.faceReidActive ? 'on' : 'off'} · ` +
+          `faces ${d.facesDetected}→${d.facesAttached} attached`;
+        debugEl.textContent = `diagnostics: ${line}`;
+        // eslint-disable-next-line no-console
+        console.log(`[HeadTracker] ${line}`);
       },
     },
     { detectionIntervalMs, appearanceReid },
