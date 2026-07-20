@@ -153,17 +153,6 @@ export interface TrackerConfig {
   bodyMatchAffinity: number;
   /** EMA weight on a fresh body descriptor when updating a track. */
   bodyEmaWeight: number;
-  /**
-   * VETO floors. A spatially-plausible pair is FORBIDDEN outright when both
-   * sides carry the same strong embedding cue yet its affinity is below this
-   * — i.e. they're clearly different people. This stops a track whose own
-   * detection dropped for a round from grabbing a nearby DIFFERENT person
-   * (the "stream 1 jumps to person 2" swap). Kept well below the match
-   * thresholds so only clear mismatches are vetoed. Colour is too weak to
-   * veto on, so there is no colour veto.
-   */
-  faceVetoAffinity: number;
-  bodyVetoAffinity: number;
 }
 
 export const DEFAULT_TRACKER_CONFIG: TrackerConfig = {
@@ -184,8 +173,6 @@ export const DEFAULT_TRACKER_CONFIG: TrackerConfig = {
   bodyWeight: 0.75,
   bodyMatchAffinity: 0.6,
   bodyEmaWeight: 0.2,
-  faceVetoAffinity: 0.2,
-  bodyVetoAffinity: 0.3,
 };
 
 /** Result of one association round, for the engine to reconcile streams. */
@@ -346,10 +333,6 @@ export class HeadIdentityTracker {
 
     const spatialAffinity = Math.max(iou, gate > 0 ? Math.max(0, 1 - distance / gate) : 0);
     const reid = this.reidSimilarity(track, detection);
-    // Veto: a clear embedding mismatch forbids the pair even if it's spatially
-    // close — this is what stops a track grabbing a nearby DIFFERENT person.
-    if (reid.kind === 'face' && reid.sim < this.config.faceVetoAffinity) return DISALLOWED_COST;
-    if (reid.kind === 'body' && reid.sim < this.config.bodyVetoAffinity) return DISALLOWED_COST;
     if (reid.kind !== 'none') {
       const w = this.reidWeight(reid.kind);
       return 1 - (w * reid.sim + (1 - w) * spatialAffinity);

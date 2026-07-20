@@ -131,17 +131,12 @@ frame: each slot's smoother EMAs toward its target and draws the crop.
   128-D, the precise booster when a face is visible. Opt-in (heavier). Runs on
   the forced webgl backend (webgpu hung); embed is time-capped so it can't
   stall the loop. Verified headless + in-browser.
-- **Three swap defences (why crossings don't trade ids).** (1) Fusing
+- **Two swap defences (why crossings don't trade ids).** (1) Fusing
   appearance into the phase-1 cost + optimal assignment (`assignment.ts`) —
   within the gate identity follows appearance, not the nearest box. (2) A
   match to a detection that overlaps another (`detectionOverlapFreeze` IoU)
   skips the appearance EMA update (also below `appearanceUpdateFloor`), so a
-  neighbour's clothing can't contaminate a signature mid-crossing. (3) **Veto**
-  (`faceVetoAffinity`/`bodyVetoAffinity`): a spatially-close pair is FORBIDDEN
-  when both carry the same strong embedding yet it clearly disagrees — this is
-  what stops a track whose own detection dropped for a round from grabbing a
-  nearby DIFFERENT person ("stream 1 jumps to person 2"). Verified headless
-  (bug reproduced with veto off, fixed with veto on, same-person not blocked). Verified
+  neighbour's clothing can't contaminate a signature mid-crossing. Verified
   headless (crossing swap prevented-with-fusion / happens-without, guard
   preserves re-ID, Hungarian incl. optimal-beats-greedy). Limit: colour can't
   separate look-alikes — a learned/face embedding is the next step.
