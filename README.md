@@ -111,11 +111,12 @@ Two source modes:
   real-time playback speed). Best way to test against pre-recorded footage.
 
 The **Detection interval** slider (0.2–2 s) re-runs detection more or less
-often; it applies live to a running session. The re-ID checkboxes stack:
-**Appearance re-ID** (clothing colour), **Body re-ID** (whole-body embedding,
-the any-angle backbone, on by default), and **Face re-ID** (face descriptor,
-opt-in/heavier). Each loads its model on first enable; toggle them to feel
-the difference — Body/Face especially when people are dressed alike.
+often; it applies live to a running session. **Model setup is explicit**:
+tick the re-ID cues you want — **Appearance re-ID** (clothing colour),
+**Body re-ID** (whole-body embedding, on by default), **Face re-ID** (face
+descriptor, opt-in/heavier) — then click **Load models**. That locks the
+selection and enables the source buttons, so it's unambiguous which models
+are running before any video loads. To change cues, reload the page.
 
 The left pane is the source; the grid on the right is one 200×200 tracked
 stream per detected head, each labelled with its stable id. Walk out of frame

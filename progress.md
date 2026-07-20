@@ -49,7 +49,7 @@ detections.
 | `src/core/headCrop.ts` | Per-track smoothed square crop geometry, clamped to frame. | `HeadCropSmoother`, `HeadCropConfig`, `CropRect` |
 | `src/core/headTrackerEngine.ts` | Orchestrator: two loops, slot lifecycle, N output `MediaStream`s. | `HeadTrackerEngine`, `HeadStream`, `HeadTrackerEngineConfig`, `HeadTrackerCallbacks` |
 | `src/core/index.ts` | Public barrel — the portals-bound module boundary. | (re-exports) |
-| `src/demo/main.ts` | Webcam **or looping video file** → engine → grid of tiles. **Not shipped.** | `startWebcam`, `loadVideoFile` |
+| `src/demo/main.ts` | Webcam **or looping video file** → engine → grid of tiles; explicit **Load models** step locks the cue selection first. **Not shipped.** | `startWebcam`, `loadVideoFile`, `loadSelectedModels` |
 | `index.html` | Demo page (source pane + output grid; webcam + file-load buttons). | — |
 
 ## Data flow
@@ -131,13 +131,17 @@ frame: each slot's smoother EMAs toward its target and draws the crop.
   128-D, the precise booster when a face is visible. Opt-in (heavier). Runs on
   the forced webgl backend (webgpu hung); embed is time-capped so it can't
   stall the loop. Verified headless + in-browser.
-- **Two swap defences (why crossings don't trade ids).** (1) Fusing
-  appearance into the phase-1 cost + optimal assignment (`assignment.ts`)
-  means that within the gate identity follows clothing, not the nearest box —
-  so greedy's crossing swap can't happen. (2) A match to a detection that
-  overlaps another (`detectionOverlapFreeze` IoU) skips the appearance EMA
-  update (also skipped below `appearanceUpdateFloor` similarity), so a
-  neighbour's clothing can't contaminate a signature mid-crossing. Verified
+- **Three swap defences (why crossings don't trade ids).** (1) Fusing
+  appearance into the phase-1 cost + optimal assignment (`assignment.ts`) —
+  within the gate identity follows appearance, not the nearest box. (2) A
+  match to a detection that overlaps another (`detectionOverlapFreeze` IoU)
+  skips the appearance EMA update (also below `appearanceUpdateFloor`), so a
+  neighbour's clothing can't contaminate a signature mid-crossing. (3) **Veto**
+  (`faceVetoAffinity`/`bodyVetoAffinity`): a spatially-close pair is FORBIDDEN
+  when both carry the same strong embedding yet it clearly disagrees — this is
+  what stops a track whose own detection dropped for a round from grabbing a
+  nearby DIFFERENT person ("stream 1 jumps to person 2"). Verified headless
+  (bug reproduced with veto off, fixed with veto on, same-person not blocked). Verified
   headless (crossing swap prevented-with-fusion / happens-without, guard
   preserves re-ID, Hungarian incl. optimal-beats-greedy). Limit: colour can't
   separate look-alikes — a learned/face embedding is the next step.

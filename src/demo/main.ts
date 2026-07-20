@@ -50,6 +50,7 @@ const intervalLabel = document.getElementById('intervalLabel') as HTMLElement;
 const reidInput = document.getElementById('reid') as HTMLInputElement;
 const faceReidInput = document.getElementById('faceReid') as HTMLInputElement;
 const bodyReidInput = document.getElementById('bodyReid') as HTMLInputElement;
+const loadModelsButton = document.getElementById('loadModels') as HTMLButtonElement;
 
 const tileById = new Map<number, HTMLElement>();
 
@@ -57,8 +58,10 @@ let engine: HeadTrackerEngine | null = null;
 let poseDetector: poseDetection.PoseDetector | null = null;
 let faceModelsLoaded = false;
 let mobilenetModel: mobilenet.MobileNet | null = null;
+let modelsLoaded = false;
 let currentObjectUrl: string | null = null;
 let detectionIntervalMs = Number(intervalInput.value);
+// Which re-ID cues to run. Fixed at "Load models" time (checkboxes lock then).
 let appearanceReid = reidInput.checked;
 let faceReid = faceReidInput.checked;
 let bodyReid = bodyReidInput.checked;
@@ -82,22 +85,6 @@ async function ensureBodyModelLoaded(): Promise<void> {
   mobilenetModel = await mobilenet.load({ version: 2, alpha: 1.0 });
 }
 
-/** Turn body re-ID on for the running engine, loading MobileNet on demand. */
-async function activateBodyReid(): Promise<void> {
-  if (!engine) return;
-  try {
-    setBodyState('loading…');
-    await ensureBodyModelLoaded();
-    if (!engine) return;
-    engine.setBodyEmbedder(bodyEmbedder);
-    engine.setBodyReid(true);
-    setBodyState('active');
-  } catch (err) {
-    setBodyState('FAILED to load');
-    // eslint-disable-next-line no-console
-    console.error('[HeadTracker] body model load failed:', err);
-  }
-}
 
 /** face-api face detector + 128-D embedder, wrapping the FaceEmbedder API. */
 const faceEmbedder: FaceEmbedder = {
@@ -134,28 +121,6 @@ async function ensureFaceModelsLoaded(): Promise<void> {
   await faceapi.nets.faceLandmark68Net.loadFromUri(FACE_MODEL_URL);
   await faceapi.nets.faceRecognitionNet.loadFromUri(FACE_MODEL_URL);
   faceModelsLoaded = true;
-}
-
-/** Turn face re-ID on for the running engine, loading its models on demand. */
-async function activateFaceReid(): Promise<void> {
-  if (!engine) return;
-  try {
-    setFaceState('loading…');
-    setStatus('Loading face-recognition models…');
-    await ensureFaceModelsLoaded();
-    if (!engine) return; // may have stopped while loading
-    engine.setFaceEmbedder(faceEmbedder);
-    engine.setFaceReid(true);
-    setFaceState(`active (${tf.getBackend()})`);
-    // eslint-disable-next-line no-console
-    console.log(`[HeadTracker] face models loaded — tf backend: ${tf.getBackend()}`);
-    setStatus('Face re-ID active.');
-  } catch (err) {
-    setFaceState('FAILED to load');
-    // eslint-disable-next-line no-console
-    console.error('[HeadTracker] face model load failed:', err);
-    setStatus(`Face re-ID unavailable: ${err instanceof Error ? err.message : String(err)}`);
-  }
 }
 
 function setStatus(text: string): void {
@@ -292,8 +257,15 @@ function startEngineOnSource(): void {
     { detectionIntervalMs, appearanceReid },
   );
   engine.start(sourceVideo);
-  if (faceReid) void activateFaceReid();
-  if (bodyReid) void activateBodyReid();
+  // Models are already loaded (via "Load models"); just wire the cues.
+  if (bodyReid) {
+    engine.setBodyEmbedder(bodyEmbedder);
+    engine.setBodyReid(true);
+  }
+  if (faceReid) {
+    engine.setFaceEmbedder(faceEmbedder);
+    engine.setFaceReid(true);
+  }
 
   // Expose for ad-hoc inspection from the devtools console.
   (window as unknown as { headEngine: HeadTrackerEngine }).headEngine = engine;
@@ -365,29 +337,53 @@ intervalInput.addEventListener('input', () => {
   engine?.setDetectionInterval(detectionIntervalMs);
 });
 
-reidInput.addEventListener('change', () => {
+/** Enable/disable the cue checkboxes + the load button (lock at load time). */
+function setModelSelectionLocked(locked: boolean): void {
+  reidInput.disabled = locked;
+  bodyReidInput.disabled = locked;
+  faceReidInput.disabled = locked;
+  loadModelsButton.disabled = locked;
+}
+
+/**
+ * Load exactly the models for the currently-ticked cues, then lock the
+ * selection and enable the source buttons. Configure once, up front, so it's
+ * unambiguous which models are running before any video is loaded.
+ */
+async function loadSelectedModels(): Promise<void> {
   appearanceReid = reidInput.checked;
-  engine?.setAppearanceReid(appearanceReid);
-});
-
-faceReidInput.addEventListener('change', () => {
-  faceReid = faceReidInput.checked;
-  if (faceReid) {
-    void activateFaceReid();
-  } else {
-    engine?.setFaceReid(false);
-    setFaceState('off');
-  }
-});
-
-bodyReidInput.addEventListener('change', () => {
   bodyReid = bodyReidInput.checked;
-  if (bodyReid) {
-    void activateBodyReid();
-  } else {
-    engine?.setBodyReid(false);
-    setBodyState('off');
+  faceReid = faceReidInput.checked;
+  setModelSelectionLocked(true);
+  loadModelsButton.textContent = 'Loading models…';
+  try {
+    await ensureModelLoaded(); // MoveNet detector (+ forces webgl backend)
+    if (bodyReid) {
+      setBodyState('loading…');
+      await ensureBodyModelLoaded();
+      setBodyState('loaded');
+    }
+    if (faceReid) {
+      setFaceState('loading…');
+      await ensureFaceModelsLoaded();
+      setFaceState('loaded');
+    }
+    modelsLoaded = true;
+    startButton.disabled = false;
+    loadVideoButton.disabled = false;
+    loadModelsButton.textContent = 'Models loaded ✓';
+    setStatus('Models loaded — start a webcam or load a video file.');
+  } catch (err) {
+    setModelSelectionLocked(false); // let the user retry / change selection
+    loadModelsButton.textContent = 'Load models';
+    setStatus(`Model load failed: ${err instanceof Error ? err.message : String(err)}`);
+    // eslint-disable-next-line no-console
+    console.error('[HeadTracker] model load failed:', err);
   }
+}
+
+loadModelsButton.addEventListener('click', () => {
+  if (!modelsLoaded) void loadSelectedModels();
 });
 
 startButton.addEventListener('click', () => {
