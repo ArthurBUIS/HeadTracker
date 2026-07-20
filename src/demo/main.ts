@@ -14,21 +14,22 @@
  * Daily.co track and each HeadStream fed to a video tile.
  */
 
-// Pose model: MoveNet MultiPose on tfjs. Importing '@tensorflow/tfjs'
-// registers the webgl/cpu backend the model runs on. Pose keypoints give
-// the actual head position (steadier than a body-box heuristic) and still
-// resolve heads from behind via shoulder geometry.
+// Detector: BodyPix instance segmentation on tfjs. Importing '@tensorflow/tfjs'
+// registers the webgl/cpu backend. BodyPix gives a per-person MASK (so the
+// body embedding uses only that person's pixels — clean through occlusions)
+// plus pose keypoints for the head (face keypoints, or shoulders when facing
+// away). MobileNet embeds the masked body crop.
 import * as tf from '@tensorflow/tfjs';
-import * as poseDetection from '@tensorflow-models/pose-detection';
 import * as mobilenet from '@tensorflow-models/mobilenet';
+import * as bodyPix from '@tensorflow-models/body-pix';
 // The **nobundle** face-api build imports the app's external @tensorflow/tfjs
 // instead of inlining its own, so face recognition shares the ONE tfjs engine
-// MoveNet already uses (avoids the "two TensorFlow globals" crash).
+// (avoids the "two TensorFlow globals" crash).
 import * as faceapi from '@vladmandic/face-api/dist/face-api.esm-nobundle.js';
 
 import {
   HeadTrackerEngine,
-  type PoseDetectorLike,
+  type BodyPixNet,
   type FaceEmbedder,
   type FaceObservation,
   type BodyEmbedder,
@@ -55,7 +56,7 @@ const loadModelsButton = document.getElementById('loadModels') as HTMLButtonElem
 const tileById = new Map<number, HTMLElement>();
 
 let engine: HeadTrackerEngine | null = null;
-let poseDetector: poseDetection.PoseDetector | null = null;
+let bodyPixNet: bodyPix.BodyPix | null = null;
 let faceModelsLoaded = false;
 let mobilenetModel: mobilenet.MobileNet | null = null;
 let modelsLoaded = false;
@@ -187,23 +188,25 @@ function removeTile(id: number): void {
   }
 }
 
-/** Load the MoveNet pose detector once; idempotent across source switches. */
+/** Load the BodyPix segmentation net once; idempotent across source switches. */
 async function ensureModelLoaded(): Promise<void> {
-  if (poseDetector) return;
-  setStatus('Loading MoveNet MultiPose model…');
+  if (bodyPixNet) return;
+  setStatus('Loading BodyPix segmentation model…');
   // Force the webgl backend before any model loads. face-api's landmark /
   // recognition nets are unreliable on webgpu (they can hang, which stalls
   // the detection loop and stops streams appearing); webgl is the tested
-  // path for MoveNet AND face-api, and they share this one engine.
+  // path for BodyPix AND face-api, and they share this one engine.
   try {
     await tf.setBackend('webgl');
   } catch {
     /* fall back to whatever backend is available */
   }
   await tf.ready();
-  poseDetector = await poseDetection.createDetector(poseDetection.SupportedModels.MoveNet, {
-    modelType: poseDetection.movenet.modelType.MULTIPOSE_LIGHTNING,
-    enableTracking: false,
+  bodyPixNet = await bodyPix.load({
+    architecture: 'MobileNetV1',
+    outputStride: 16,
+    multiplier: 0.75,
+    quantBytes: 2,
   });
 }
 
@@ -229,9 +232,9 @@ function teardownCurrentSource(): void {
 
 /** Build the engine on the (already playing) source video and start it. */
 function startEngineOnSource(): void {
-  if (!poseDetector) throw new Error('Model not loaded');
-  engine = HeadTrackerEngine.withMoveNet(
-    poseDetector as unknown as PoseDetectorLike,
+  if (!bodyPixNet) throw new Error('Model not loaded');
+  engine = HeadTrackerEngine.withBodyPix(
+    bodyPixNet as unknown as BodyPixNet,
     {
       onHeadStreamAdded: ({ id, stream }) => {
         addTile(id, stream);

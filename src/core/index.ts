@@ -12,6 +12,7 @@ export type {
   HeadDetector,
   FrameSource,
   FrameSize,
+  PersonMask,
 } from './types';
 
 export {
@@ -51,6 +52,15 @@ export {
   type PoseKeypoint,
   type MoveNetDetectorConfig,
 } from './moveNetDetector';
+
+export {
+  BodyPixHeadDetector,
+  DEFAULT_BODY_PIX_DETECTOR_CONFIG,
+  type BodyPixNet,
+  type BodyPixPersonSegmentation,
+  type BodyPixKeypoint,
+  type BodyPixDetectorConfig,
+} from './bodyPixDetector';
 
 export {
   computeHsvHistogram,

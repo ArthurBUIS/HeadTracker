@@ -18,7 +18,12 @@
  * portals can share one loaded instance.
  */
 
-import type { Box, FrameSource, HeadDetection, HeadDetector } from './types';
+import {
+  estimateHeadFromKeypoints,
+  keypointBoundingBox,
+  type HeadGeometryConfig,
+} from './poseHead';
+import type { FrameSource, HeadDetection, HeadDetector } from './types';
 
 /** One keypoint from pose-detection (pixel coords, optional confidence/name). */
 export interface PoseKeypoint {
@@ -66,7 +71,6 @@ export const DEFAULT_MOVENET_DETECTOR_CONFIG: MoveNetDetectorConfig = {
   minHeadSize: 24,
 };
 
-const FACE_KEYPOINTS = ['nose', 'left_eye', 'right_eye', 'left_ear', 'right_ear'];
 
 export class MoveNetHeadDetector implements HeadDetector {
   private readonly config: MoveNetDetectorConfig;
@@ -83,7 +87,7 @@ export class MoveNetHeadDetector implements HeadDetector {
     const out: HeadDetection[] = [];
     for (const pose of poses) {
       if ((pose.score ?? 1) < this.config.minPoseScore) continue;
-      const head = this.estimateHead(pose);
+      const head = estimateHeadFromKeypoints(pose.keypoints, this.headGeometry());
       if (!head) continue;
       out.push({
         x: head.cx - head.size / 2,
@@ -91,60 +95,24 @@ export class MoveNetHeadDetector implements HeadDetector {
         width: head.size,
         height: head.size,
         score: pose.score ?? 1,
-        bodyBox: this.estimateBodyBox(pose) ?? undefined,
+        bodyBox:
+          keypointBoundingBox(
+            pose.keypoints,
+            this.config.minKeypointScore,
+            this.config.bodyPadding,
+          ) ?? undefined,
       });
     }
     return out;
   }
 
-  /** Head centre + size from face keypoints, else shoulder geometry. */
-  private estimateHead(pose: Pose): { cx: number; cy: number; size: number } | null {
-    const named = new Map<string, PoseKeypoint>();
-    for (const kp of pose.keypoints) {
-      if (kp.name && (kp.score ?? 0) >= this.config.minKeypointScore) named.set(kp.name, kp);
-    }
-
-    const face = FACE_KEYPOINTS.map((n) => named.get(n)).filter(
-      (kp): kp is PoseKeypoint => kp !== undefined,
-    );
-    if (face.length >= 2) {
-      const xs = face.map((k) => k.x);
-      const ys = face.map((k) => k.y);
-      const span = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
-      const size = Math.max(this.config.minHeadSize, span * this.config.faceHeadScale);
-      const cx = xs.reduce((a, b) => a + b, 0) / xs.length;
-      const cy = ys.reduce((a, b) => a + b, 0) / ys.length;
-      return { cx, cy, size };
-    }
-
-    const ls = named.get('left_shoulder');
-    const rs = named.get('right_shoulder');
-    if (ls && rs) {
-      const shoulderWidth = Math.hypot(ls.x - rs.x, ls.y - rs.y);
-      const size = Math.max(this.config.minHeadSize, shoulderWidth * this.config.shoulderHeadScale);
-      const cx = (ls.x + rs.x) / 2;
-      const cy = (ls.y + rs.y) / 2 - shoulderWidth * this.config.shoulderHeadRise;
-      return { cx, cy, size };
-    }
-    return null; // not enough evidence for a reliable head
-  }
-
-  /** Body box = padded bounding box of the confident keypoints. */
-  private estimateBodyBox(pose: Pose): Box | null {
-    const valid = pose.keypoints.filter((k) => (k.score ?? 0) >= this.config.minKeypointScore);
-    if (valid.length < 2) return null;
-    const xs = valid.map((k) => k.x);
-    const ys = valid.map((k) => k.y);
-    const minX = Math.min(...xs);
-    const minY = Math.min(...ys);
-    const width = Math.max(...xs) - minX;
-    const height = Math.max(...ys) - minY;
-    const pad = this.config.bodyPadding * Math.max(width, height);
+  private headGeometry(): HeadGeometryConfig {
     return {
-      x: minX - pad,
-      y: minY - pad,
-      width: width + 2 * pad,
-      height: height + 2 * pad,
+      minKeypointScore: this.config.minKeypointScore,
+      faceHeadScale: this.config.faceHeadScale,
+      shoulderHeadScale: this.config.shoulderHeadScale,
+      shoulderHeadRise: this.config.shoulderHeadRise,
+      minHeadSize: this.config.minHeadSize,
     };
   }
 }

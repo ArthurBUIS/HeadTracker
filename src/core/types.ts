@@ -51,6 +51,21 @@ export interface HeadDetection extends Box {
    * See `bodyEmbedding.ts`.
    */
   bodyEmbedding?: import('./bodyEmbedding').BodyDescriptor;
+  /**
+   * Optional per-person segmentation mask (1 = this person's pixel), at the
+   * given resolution and aligned to the source frame. When present the engine
+   * embeds only THIS person's pixels, so an occluding neighbour's body can't
+   * contaminate the body embedding. Produced by a segmentation detector
+   * (BodyPix). See `bodyPixDetector.ts`.
+   */
+  personMask?: PersonMask;
+}
+
+/** A binary person mask aligned to the source frame (1 = person, 0 = not). */
+export interface PersonMask {
+  data: Uint8Array;
+  width: number;
+  height: number;
 }
 
 /** A face detected in the frame: its box plus 128-D embedding. */

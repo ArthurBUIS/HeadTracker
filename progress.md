@@ -19,8 +19,8 @@ people-counting. The reusable algorithm is `src/core`; `src/demo` +
    │        │                                        │                      │
    │        ▼                                        ▼                      │
    │  HeadDetector.detectHeads()            per-id HeadCropSmoother.step()  │
-   │  (MoveNetHeadDetector: pose                (EMA glide toward target)   │
-   │   keypoints → head + body boxes)                │                      │
+   │  (BodyPixHeadDetector: seg mask +          (EMA glide toward target)   │
+   │   pose → head + body box + mask)                │                      │
    │        │                                        ▼                      │
    │   + sampleAppearance (torso HSV hist)   drawImage(source → 200×200)     │
    │  HeadIdentityTracker.update()                   │                      │
@@ -43,7 +43,9 @@ detections.
 | `src/core/faceEmbedding.ts` | 128-D face-descriptor distance/affinity/EMA + face→head box assignment. DOM-free; the embedder itself is injected. | `faceDistance`, `faceAffinity`, `blendFace`, `matchFacesToBoxes`, `FaceDescriptor` |
 | `src/core/bodyEmbedding.ts` | Whole-body embedding cosine affinity + EMA. DOM-free; the CNN (MobileNet by default) is injected. | `bodyAffinity`, `blendBody`, `BodyDescriptor` |
 | `src/core/appearance.ts` | Torso HSV colour-histogram descriptor + intersection similarity + EMA blend. DOM-free (operates on RGBA data). | `computeHsvHistogram`, `appearanceSimilarity`, `blendAppearance`, `AppearanceDescriptor` |
-| `src/core/moveNetDetector.ts` | **Active detector.** MoveNet pose keypoints → head box (face keypoints, else shoulder geometry) + body box. | `MoveNetHeadDetector`, `PoseDetectorLike`, `DEFAULT_MOVENET_DETECTOR_CONFIG` |
+| `src/core/bodyPixDetector.ts` | **Active detector.** BodyPix instance seg → per-person mask + pose → head box, mask-bbox body box, and the mask (for clean embedding). | `BodyPixHeadDetector`, `BodyPixNet`, `DEFAULT_BODY_PIX_DETECTOR_CONFIG` |
+| `src/core/poseHead.ts` | Shared head-from-COCO-keypoints geometry (face keypoints, else shoulders). Used by BodyPix + MoveNet. | `estimateHeadFromKeypoints`, `keypointBoundingBox` |
+| `src/core/moveNetDetector.ts` | Alt detector: MoveNet pose keypoints → head + body box. | `MoveNetHeadDetector`, `PoseDetectorLike`, `DEFAULT_MOVENET_DETECTOR_CONFIG` |
 | `src/core/cocoSsdDetector.ts` | Alt detector: coco-ssd body boxes → top-centre head boxes. | `CocoSsdHeadDetector`, `CocoSsdModelLike`, `DEFAULT_COCO_SSD_DETECTOR_CONFIG` |
 | `src/core/faceApiDetector.ts` | Alt detector: face-api faces → head boxes; tfjs scope disposal. | `FaceApiHeadDetector`, `FaceApiLike`, `DEFAULT_FACE_API_DETECTOR_CONFIG` |
 | `src/core/headCrop.ts` | Per-track smoothed square crop geometry, clamped to frame. | `HeadCropSmoother`, `HeadCropConfig`, `CropRect` |
@@ -64,12 +66,12 @@ per new confirmed id, refreshes targets, tears down removed ids. Per render
 frame: each slot's smoother EMAs toward its target and draws the crop.
 
 ## Dependencies
-- **Runtime:** `@tensorflow-models/pose-detection` + `@tensorflow/tfjs`
-  (active MoveNet detector); `@tensorflow-models/mobilenet` (body-embedding
-  re-ID); `@vladmandic/face-api` **nobundle** build (face-embedding re-ID,
-  shares the one tfjs engine — see FaceDetection.jsx in portals);
-  `@tensorflow-models/coco-ssd` (alt detector). Core imports none of them —
-  only DOM/canvas/MediaStream (Electron-renderer safe); the detector and both
+- **Runtime:** `@tensorflow-models/body-pix` + `@tensorflow/tfjs` (active
+  BodyPix segmentation detector); `@tensorflow-models/mobilenet`
+  (body-embedding re-ID); `@vladmandic/face-api` **nobundle** build
+  (face-embedding re-ID, shares the one tfjs engine); `pose-detection` /
+  `coco-ssd` (alt detectors). Core imports none of them — only
+  DOM/canvas/MediaStream (Electron-renderer safe); the detector and both
   embedders are injected. All models run on the forced **webgl** backend.
 - **Dev:** `vite` (demo dev server + `esbuild` bundling), `typescript`
   (strict, `tsc --noEmit`). tsconfig mirrors portals: `es2021`, strict,
@@ -78,14 +80,16 @@ frame: each slot's smoother EMAs toward its target and draws the crop.
   (verified in-browser); coco-ssd / face-api weights similar when selected.
 
 ## Key decisions & gotchas
-- **Pose model for the head, not a body-box heuristic (fixes head jitter).**
-  MoveNet MultiPose gives head keypoints (nose/eyes/ears) → head box tracks
-  the real head; facing away, it falls back to shoulder geometry (head sits
-  `shoulderHeadRise` × shoulder-width above the shoulder line). Emits a body
-  box (keypoint bbox) for association + appearance. coco-ssd (body→head
-  heuristic) and face-api remain behind `HeadDetector` for the selector.
-  FaceNet was rejected as a detector: it's face-*recognition*, needs a
-  visible face — useful later only for re-ID.
+- **Segmentation detector (BodyPix) → clean embeddings through occlusion.**
+  When one person walks in front of another their boxes overlap, so a
+  box-cropped body embedding fills with the occluder's pixels and the id can
+  jump to the wrong head. BodyPix gives a per-person **mask**; the engine
+  (`applyPersonMask`) keeps only that person's pixels in the 224 crop before
+  MobileNet, so the signature stays clean. Head comes from BodyPix's pose via
+  the shared `poseHead` geometry (face keypoints, else shoulders — works
+  facing away). MoveNet/coco-ssd/face-api remain behind `HeadDetector`.
+  Note: BodyPix's own multi-person separation still degrades under heavy
+  occlusion — the masking mitigates contamination, not the detection itself.
 - **Detector is injected, not imported** by the engine (`HeadDetector`
   interface) so portals reuses its one loaded tfjs engine — the same "one
   engine" concern documented in portals' `src/renderer/utils/faceApi.js`.

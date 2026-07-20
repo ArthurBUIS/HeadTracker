@@ -19,7 +19,7 @@ Four stages, two clocks:
 
 | Stage | Runs | What it does |
 |-------|------|--------------|
-| **Detect** | every **0.2–2 s** (adjustable) | MoveNet MultiPose locates each person's **head** from keypoints (nose/eyes/ears), falling back to shoulder geometry when the face isn't visible — so people **turned away from the camera are still tracked**, without the body-box jitter. |
+| **Detect** | every **0.2–2 s** (adjustable) | BodyPix **instance segmentation** gives a per-person **mask** + pose. The head comes from the keypoints (face, or shoulders when facing away); the mask lets the body embedding use only that person's pixels — **clean through occlusions**. |
 | **Track** | each detection | (1) greedy IoU **+ centre-distance** on the body box, (2) **appearance rescue**, (3) **gallery re-ID** → a stable integer id per participant, with birth (`minHits`) / death (interval-scaled `maxMisses`). **This is the "which box is which" part.** |
 | **Smooth + crop** | every render frame (~30 fps) | per-id EMA glides the 200×200 crop toward the head. Position and zoom smooth on **separate** time constants — position snappy, zoom (`sizeSeconds`, long) near-constant so the framing doesn't pulse with head-size noise. |
 | **Output** | continuous | one `canvas.captureStream()` per id. |
@@ -84,17 +84,18 @@ after lingering that long with no return is the stream finally stopped.
 
 ### Detection model
 
-The active detector is **MoveNet MultiPose**
-(`@tensorflow-models/pose-detection` on tfjs). It locates the head from
-actual keypoints, so the head box is far steadier than a slice of a jittery
-person box, and it still resolves a head from behind via shoulder geometry
-(`moveNetDetector.ts`). It also emits a body box (the keypoint bounding box)
-that the tracker associates on and the engine samples for appearance.
+The active detector is **BodyPix instance segmentation**
+(`@tensorflow-models/body-pix` on tfjs). Per person it yields a **mask** and
+a pose; the head comes from the keypoints (`poseHead.ts`: face keypoints, or
+shoulder geometry when facing away), the body box is the mask's bounding box,
+and the mask rides along on the detection. The engine then embeds **only the
+masked pixels**, so when one person walks in front of another the body
+embedding isn't contaminated by the occluder — the fix for a stream jumping
+to the wrong head. (`bodyPixDetector.ts`.)
 
-The `HeadDetector` interface is pluggable — three implementations live in the
-repo for a planned in-page model selector: **MoveNet** (active),
-**coco-ssd** body detection (`cocoSsdDetector.ts`), and **face-api**
-(`faceApiDetector.ts`). A YOLOv8-ONNX detector could drop into the same slot.
+The `HeadDetector` interface is pluggable — other implementations live in the
+repo behind it: **MoveNet** pose (`moveNetDetector.ts`), **coco-ssd** body
+detection (`cocoSsdDetector.ts`), and **face-api** (`faceApiDetector.ts`).
 
 ## Run the demo
 
@@ -169,7 +170,9 @@ HeadTracker/
 │   │   ├── appearance.ts       torso colour-histogram descriptors for re-ID
 │   │   ├── bodyEmbedding.ts    whole-body embedding re-ID cue (cosine sim)
 │   │   ├── faceEmbedding.ts    128-D face-descriptor re-ID cue + face→head map
-│   │   ├── moveNetDetector.ts  MoveNet pose → head boxes from keypoints (active)
+│   │   ├── bodyPixDetector.ts  BodyPix segmentation → head + body box + mask (active)
+│   │   ├── poseHead.ts         shared head-from-keypoints geometry
+│   │   ├── moveNetDetector.ts  MoveNet pose → head boxes (kept for selector)
 │   │   ├── cocoSsdDetector.ts  coco-ssd body → head boxes (kept for selector)
 │   │   ├── faceApiDetector.ts  face-api faces → head boxes (kept for selector)
 │   │   ├── headCrop.ts         per-track smoothed 200×200 crop geometry

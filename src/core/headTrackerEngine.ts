@@ -22,6 +22,7 @@
  */
 
 import { computeHsvHistogram, type AppearanceDescriptor } from './appearance';
+import { BodyPixHeadDetector, type BodyPixNet } from './bodyPixDetector';
 import { CocoSsdHeadDetector, type CocoSsdModelLike } from './cocoSsdDetector';
 import { FaceApiHeadDetector, type FaceApiLike } from './faceApiDetector';
 import { matchFacesToBoxes } from './faceEmbedding';
@@ -41,6 +42,7 @@ import type {
   HeadDetection,
   HeadDetector,
   FrameSource,
+  PersonMask,
 } from './types';
 
 /** Torso sub-region of a body box, sampled for the appearance histogram. */
@@ -231,6 +233,11 @@ export class HeadTrackerEngine {
 
   private bodyCtx: CanvasRenderingContext2D | null = null;
 
+  /** Reused offscreen canvas holding a person mask for the current crop. */
+  private bodyMaskCanvas: HTMLCanvasElement | null = null;
+
+  private bodyMaskCtx: CanvasRenderingContext2D | null = null;
+
   /** Monotonic detection-round counter for diagnostics. */
   private roundCounter = 0;
 
@@ -284,6 +291,20 @@ export class HeadTrackerEngine {
     config: Partial<HeadTrackerEngineConfig> = {},
   ): HeadTrackerEngine {
     return new HeadTrackerEngine(new MoveNetHeadDetector(detector), callbacks, config);
+  }
+
+  /**
+   * Convenience constructor for the segmentation path: build the engine on a
+   * loaded BodyPix net. Each detection carries a per-person mask, so the body
+   * embedding is computed from only that person's pixels — clean through
+   * occlusions (the fix for a stream jumping to the wrong head).
+   */
+  static withBodyPix(
+    net: BodyPixNet,
+    callbacks: HeadTrackerCallbacks = {},
+    config: Partial<HeadTrackerEngineConfig> = {},
+  ): HeadTrackerEngine {
+    return new HeadTrackerEngine(new BodyPixHeadDetector(net), callbacks, config);
   }
 
   /** Begin detecting/tracking against `source` (a playing `<video>`). */
@@ -560,7 +581,12 @@ export class HeadTrackerEngine {
       const region = this.clampBox(detection.bodyBox ?? detection, frame);
       if (!region) continue;
       try {
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.clearRect(0, 0, 224, 224);
         ctx.drawImage(source, region.x, region.y, region.width, region.height, 0, 0, 224, 224);
+        // If the detection carries a person mask, keep only that person's
+        // pixels — so an overlapping neighbour can't contaminate the embedding.
+        if (detection.personMask) this.applyPersonMask(ctx, region, detection.personMask);
         const vector = await this.withTimeout(
           this.bodyEmbedder.embed(canvas),
           this.config.faceEmbedTimeoutMs,
@@ -575,6 +601,49 @@ export class HeadTrackerEngine {
       }
     }
     return embedded;
+  }
+
+  /**
+   * Keep only this person's pixels in the 224×224 crop: build a mask image
+   * (opaque where the person is, transparent elsewhere) for `region` and
+   * composite it 'destination-in'. Non-person pixels become transparent and
+   * read as black to the embedder.
+   */
+  private applyPersonMask(
+    ctx: CanvasRenderingContext2D,
+    region: Box,
+    mask: PersonMask,
+  ): void {
+    const size = 224;
+    if (!this.bodyMaskCtx) {
+      this.bodyMaskCanvas = document.createElement('canvas');
+      this.bodyMaskCanvas.width = size;
+      this.bodyMaskCanvas.height = size;
+      this.bodyMaskCtx = this.bodyMaskCanvas.getContext('2d', { willReadFrequently: true });
+    }
+    const maskCtx = this.bodyMaskCtx;
+    const maskCanvas = this.bodyMaskCanvas;
+    if (!maskCtx || !maskCanvas) return;
+
+    const image = maskCtx.createImageData(size, size);
+    const px = image.data;
+    for (let oy = 0; oy < size; oy += 1) {
+      const sy = Math.min(mask.height - 1, Math.floor(region.y + ((oy + 0.5) / size) * region.height));
+      for (let ox = 0; ox < size; ox += 1) {
+        const sx = Math.min(mask.width - 1, Math.floor(region.x + ((ox + 0.5) / size) * region.width));
+        const on = mask.data[sy * mask.width + sx] ? 255 : 0;
+        const o = (oy * size + ox) * 4;
+        px[o] = 255;
+        px[o + 1] = 255;
+        px[o + 2] = 255;
+        px[o + 3] = on;
+      }
+    }
+    maskCtx.putImageData(image, 0, 0);
+
+    ctx.globalCompositeOperation = 'destination-in';
+    ctx.drawImage(maskCanvas, 0, 0);
+    ctx.globalCompositeOperation = 'source-over';
   }
 
   /** Clamp a box to the frame; null if it degenerates to < 2px. */
