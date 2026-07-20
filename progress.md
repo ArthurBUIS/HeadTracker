@@ -51,7 +51,7 @@ detections.
 | `src/core/headCrop.ts` | Per-track smoothed square crop geometry, clamped to frame. | `HeadCropSmoother`, `HeadCropConfig`, `CropRect` |
 | `src/core/headTrackerEngine.ts` | Orchestrator: two loops, slot lifecycle, N output `MediaStream`s. | `HeadTrackerEngine`, `HeadStream`, `HeadTrackerEngineConfig`, `HeadTrackerCallbacks` |
 | `src/core/index.ts` | Public barrel — the portals-bound module boundary. | (re-exports) |
-| `src/demo/main.ts` | Webcam **or looping video file** → engine → grid of tiles; explicit **Load models** step locks the cue selection first. **Not shipped.** | `startWebcam`, `loadVideoFile`, `loadSelectedModels` |
+| `src/demo/main.ts` | Webcam **or looping video file** → engine → grid of tiles. Exclusive **detector** + **re-ID** radios (exact model names) locked by an explicit **Load models** step. **Not shipped.** | `startWebcam`, `loadVideoFile`, `loadSelectedModels` |
 | `index.html` | Demo page (source pane + output grid; webcam + file-load buttons). | — |
 
 ## Data flow
@@ -87,9 +87,12 @@ frame: each slot's smoother EMAs toward its target and draws the crop.
   (`applyPersonMask`) keeps only that person's pixels in the 224 crop before
   MobileNet, so the signature stays clean. Head comes from BodyPix's pose via
   the shared `poseHead` geometry (face keypoints, else shoulders — works
-  facing away). MoveNet/coco-ssd/face-api remain behind `HeadDetector`.
-  Note: BodyPix's own multi-person separation still degrades under heavy
-  occlusion — the masking mitigates contamination, not the detection itself.
+  facing away). **Gotcha:** BodyPix (PoseNet) names keypoints in camelCase
+  (`leftShoulder`) but `poseHead` uses MoveNet's snake_case — the detector
+  normalises (`camelToSnake`), else every head lookup misses and NO heads are
+  detected (was the "no streams" bug). MoveNet/coco-ssd/face-api remain behind
+  `HeadDetector`. Note: BodyPix's own multi-person separation still degrades
+  under heavy occlusion — masking mitigates contamination, not detection.
 - **Detector is injected, not imported** by the engine (`HeadDetector`
   interface) so portals reuses its one loaded tfjs engine — the same "one
   engine" concern documented in portals' `src/renderer/utils/faceApi.js`.

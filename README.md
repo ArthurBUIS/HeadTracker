@@ -113,11 +113,16 @@ Two source modes:
 
 The **Detection interval** slider (0.2–2 s) re-runs detection more or less
 often; it applies live to a running session. **Model setup is explicit**:
-tick the re-ID cues you want — **Appearance re-ID** (clothing colour),
-**Body re-ID** (whole-body embedding, on by default), **Face re-ID** (face
-descriptor, opt-in/heavier) — then click **Load models**. That locks the
-selection and enables the source buttons, so it's unambiguous which models
-are running before any video loads. To change cues, reload the page.
+pick **one detector** and **one re-ID method** by their exact model names,
+then click **Load models** — the status line then states precisely what's
+running. That locks the choice and enables the source buttons. To change,
+reload the page.
+
+- **Detector**: `BodyPix — MobileNetV1` (segmentation, gives masks) or
+  `MoveNet — MultiPose Lightning` (pose).
+- **Re-ID**: `None`, `Colour histogram`, `Body embedding — MobileNet v2`, or
+  `Face embedding — face-api (SSD + ResNet, FaceNet-style)`. Exactly one runs,
+  so there's no ambiguity about which cue is active.
 
 The left pane is the source; the grid on the right is one 200×200 tracked
 stream per detected head, each labelled with its stable id. Walk out of frame

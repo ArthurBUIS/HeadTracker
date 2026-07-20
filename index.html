@@ -129,14 +129,20 @@
     <header>
       <h1>HeadTracker</h1>
       <div class="row">
-        <strong>1.&nbsp;Models:</strong>
-        <label class="interval-control"><input id="reid" type="checkbox" checked /> Appearance re-ID</label>
-        <label class="interval-control"><input id="bodyReid" type="checkbox" checked /> Body re-ID</label>
-        <label class="interval-control"><input id="faceReid" type="checkbox" /> Face re-ID (slower)</label>
-        <button id="loadModels">Load models</button>
+        <strong>1.&nbsp;Detector&nbsp;(pick one):</strong>
+        <label class="interval-control"><input type="radio" name="detector" value="bodypix" checked /> BodyPix — MobileNetV1 (segmentation, gives masks)</label>
+        <label class="interval-control"><input type="radio" name="detector" value="movenet" /> MoveNet — MultiPose Lightning (pose)</label>
       </div>
       <div class="row">
-        <strong>2.&nbsp;Source:</strong>
+        <strong>2.&nbsp;Re-ID&nbsp;(pick one):</strong>
+        <label class="interval-control"><input type="radio" name="reid" value="none" /> None (position only)</label>
+        <label class="interval-control"><input type="radio" name="reid" value="colour" /> Colour histogram (torso HSV)</label>
+        <label class="interval-control"><input type="radio" name="reid" value="body" checked /> Body embedding — MobileNet v2</label>
+        <label class="interval-control"><input type="radio" name="reid" value="face" /> Face embedding — face-api (SSD + ResNet, FaceNet-style)</label>
+      </div>
+      <div class="row">
+        <button id="loadModels">Load models</button>
+        <strong>3.&nbsp;Source:</strong>
         <button id="start" disabled>Start webcam</button>
         <button id="loadVideo" disabled>Load video file…</button>
         <input id="videoFile" type="file" accept="video/*" hidden />
@@ -146,7 +152,7 @@
           <span id="intervalLabel">0.5 s</span>
         </label>
       </div>
-      <span id="status">Pick re-ID models, then click “Load models”.</span>
+      <span id="status">Pick a detector and a re-ID method, then click “Load models”.</span>
     </header>
     <div
       id="debug"

@@ -22,6 +22,7 @@
 import * as tf from '@tensorflow/tfjs';
 import * as mobilenet from '@tensorflow-models/mobilenet';
 import * as bodyPix from '@tensorflow-models/body-pix';
+import * as poseDetection from '@tensorflow-models/pose-detection';
 // The **nobundle** face-api build imports the app's external @tensorflow/tfjs
 // instead of inlining its own, so face recognition shares the ONE tfjs engine
 // (avoids the "two TensorFlow globals" crash).
@@ -30,10 +31,15 @@ import * as faceapi from '@vladmandic/face-api/dist/face-api.esm-nobundle.js';
 import {
   HeadTrackerEngine,
   type BodyPixNet,
+  type PoseDetectorLike,
   type FaceEmbedder,
   type FaceObservation,
   type BodyEmbedder,
+  type HeadTrackerCallbacks,
 } from '../core';
+
+type DetectorChoice = 'bodypix' | 'movenet';
+type ReidChoice = 'none' | 'colour' | 'body' | 'face';
 
 // face-api hosts the SSD / landmark / recognition weights under /model.
 const FACE_MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model';
@@ -48,24 +54,32 @@ const loadVideoButton = document.getElementById('loadVideo') as HTMLButtonElemen
 const videoFileInput = document.getElementById('videoFile') as HTMLInputElement;
 const intervalInput = document.getElementById('interval') as HTMLInputElement;
 const intervalLabel = document.getElementById('intervalLabel') as HTMLElement;
-const reidInput = document.getElementById('reid') as HTMLInputElement;
-const faceReidInput = document.getElementById('faceReid') as HTMLInputElement;
-const bodyReidInput = document.getElementById('bodyReid') as HTMLInputElement;
 const loadModelsButton = document.getElementById('loadModels') as HTMLButtonElement;
+const detectorRadios = [...document.querySelectorAll<HTMLInputElement>('input[name="detector"]')];
+const reidRadios = [...document.querySelectorAll<HTMLInputElement>('input[name="reid"]')];
+
+function checkedValue<T extends string>(radios: HTMLInputElement[], fallback: T): T {
+  return (radios.find((r) => r.checked)?.value as T) ?? fallback;
+}
 
 const tileById = new Map<number, HTMLElement>();
 
 let engine: HeadTrackerEngine | null = null;
 let bodyPixNet: bodyPix.BodyPix | null = null;
+let poseDetector: poseDetection.PoseDetector | null = null;
 let faceModelsLoaded = false;
 let mobilenetModel: mobilenet.MobileNet | null = null;
 let modelsLoaded = false;
 let currentObjectUrl: string | null = null;
 let detectionIntervalMs = Number(intervalInput.value);
-// Which re-ID cues to run. Fixed at "Load models" time (checkboxes lock then).
-let appearanceReid = reidInput.checked;
-let faceReid = faceReidInput.checked;
-let bodyReid = bodyReidInput.checked;
+
+// Chosen models, fixed at "Load models" time (the radios lock then).
+let detectorChoice: DetectorChoice = 'bodypix';
+let reidChoice: ReidChoice = 'body';
+// Derived from reidChoice — exactly one cue is attached (or none).
+let appearanceReid = false;
+let bodyReid = true;
+let faceReid = false;
 
 /** Whole-body embedder: MobileNet pooled deep features of a body crop. */
 const bodyEmbedder: BodyEmbedder = {
@@ -188,26 +202,41 @@ function removeTile(id: number): void {
   }
 }
 
-/** Load the BodyPix segmentation net once; idempotent across source switches. */
-async function ensureModelLoaded(): Promise<void> {
-  if (bodyPixNet) return;
-  setStatus('Loading BodyPix segmentation model…');
-  // Force the webgl backend before any model loads. face-api's landmark /
-  // recognition nets are unreliable on webgpu (they can hang, which stalls
-  // the detection loop and stops streams appearing); webgl is the tested
-  // path for BodyPix AND face-api, and they share this one engine.
+/**
+ * Force the webgl backend before any model loads. face-api's landmark /
+ * recognition nets are unreliable on webgpu (they can hang, which stalls the
+ * detection loop and stops streams); webgl is the tested path for every model
+ * here, and they all share this one engine.
+ */
+async function ensureBackend(): Promise<void> {
   try {
     await tf.setBackend('webgl');
   } catch {
     /* fall back to whatever backend is available */
   }
   await tf.ready();
-  bodyPixNet = await bodyPix.load({
-    architecture: 'MobileNetV1',
-    outputStride: 16,
-    multiplier: 0.75,
-    quantBytes: 2,
-  });
+}
+
+/** Load whichever detector is selected; idempotent across source switches. */
+async function ensureDetectorLoaded(): Promise<void> {
+  await ensureBackend();
+  if (detectorChoice === 'bodypix') {
+    if (bodyPixNet) return;
+    setStatus('Loading BodyPix (MobileNetV1) segmentation model…');
+    bodyPixNet = await bodyPix.load({
+      architecture: 'MobileNetV1',
+      outputStride: 16,
+      multiplier: 0.75,
+      quantBytes: 2,
+    });
+  } else {
+    if (poseDetector) return;
+    setStatus('Loading MoveNet MultiPose Lightning model…');
+    poseDetector = await poseDetection.createDetector(poseDetection.SupportedModels.MoveNet, {
+      modelType: poseDetection.movenet.modelType.MULTIPOSE_LIGHTNING,
+      enableTracking: false,
+    });
+  }
 }
 
 /** Stop any running engine and any previous source (webcam tracks / file URL). */
@@ -232,33 +261,33 @@ function teardownCurrentSource(): void {
 
 /** Build the engine on the (already playing) source video and start it. */
 function startEngineOnSource(): void {
-  if (!bodyPixNet) throw new Error('Model not loaded');
-  engine = HeadTrackerEngine.withBodyPix(
-    bodyPixNet as unknown as BodyPixNet,
-    {
-      onHeadStreamAdded: ({ id, stream }) => {
-        addTile(id, stream);
-        setStatus(`Tracking ${tileById.size} head(s).`);
-      },
-      onHeadStreamLost: (id) => setTileLost(id, true),
-      onHeadStreamResumed: (id) => setTileLost(id, false),
-      onHeadStreamRemoved: (id) => {
-        removeTile(id);
-        setStatus(`Tracking ${tileById.size} head(s).`);
-      },
-      onDiagnostics: (d) => {
-        lastDiagLine =
-          `round ${d.round} · dets ${d.detections} · tracks ${d.activeTracks} · ` +
-          `appearance ${d.appearanceReidEnabled ? 'on' : 'off'} · ` +
-          `face ${d.faceReidActive ? 'on' : 'off'} · faces ${d.facesDetected}→${d.facesAttached} · ` +
-          `body ${d.bodyReidActive ? 'on' : 'off'} · bodies ${d.bodiesEmbedded}`;
-        renderDebug();
-        // eslint-disable-next-line no-console
-        console.log(`[HeadTracker] ${lastDiagLine}`);
-      },
+  const callbacks: HeadTrackerCallbacks = {
+    onHeadStreamAdded: ({ id, stream }) => {
+      addTile(id, stream);
+      setStatus(`Tracking ${tileById.size} head(s).`);
     },
-    { detectionIntervalMs, appearanceReid },
-  );
+    onHeadStreamLost: (id) => setTileLost(id, true),
+    onHeadStreamResumed: (id) => setTileLost(id, false),
+    onHeadStreamRemoved: (id) => {
+      removeTile(id);
+      setStatus(`Tracking ${tileById.size} head(s).`);
+    },
+    onDiagnostics: (d) => {
+      lastDiagLine =
+        `round ${d.round} · dets ${d.detections} · tracks ${d.activeTracks} · ` +
+        `appearance ${d.appearanceReidEnabled ? 'on' : 'off'} · ` +
+        `face ${d.faceReidActive ? 'on' : 'off'} · faces ${d.facesDetected}→${d.facesAttached} · ` +
+        `body ${d.bodyReidActive ? 'on' : 'off'} · bodies ${d.bodiesEmbedded}`;
+      renderDebug();
+      // eslint-disable-next-line no-console
+      console.log(`[HeadTracker] ${lastDiagLine}`);
+    },
+  };
+  const config = { detectionIntervalMs, appearanceReid };
+  engine =
+    detectorChoice === 'bodypix'
+      ? HeadTrackerEngine.withBodyPix(bodyPixNet as unknown as BodyPixNet, callbacks, config)
+      : HeadTrackerEngine.withMoveNet(poseDetector as unknown as PoseDetectorLike, callbacks, config);
   engine.start(sourceVideo);
   // Models are already loaded (via "Load models"); just wire the cues.
   if (bodyReid) {
@@ -278,7 +307,7 @@ async function startWebcam(): Promise<void> {
   startButton.disabled = true;
   loadVideoButton.disabled = true;
   try {
-    await ensureModelLoaded();
+    await ensureDetectorLoaded();
     teardownCurrentSource();
 
     setStatus('Requesting webcam…');
@@ -305,7 +334,7 @@ async function loadVideoFile(file: File): Promise<void> {
   startButton.disabled = true;
   loadVideoButton.disabled = true;
   try {
-    await ensureModelLoaded();
+    await ensureDetectorLoaded();
     teardownCurrentSource();
 
     setStatus(`Opening “${file.name}”…`);
@@ -340,27 +369,27 @@ intervalInput.addEventListener('input', () => {
   engine?.setDetectionInterval(detectionIntervalMs);
 });
 
-/** Enable/disable the cue checkboxes + the load button (lock at load time). */
+/** Enable/disable the detector + re-ID radios and the load button. */
 function setModelSelectionLocked(locked: boolean): void {
-  reidInput.disabled = locked;
-  bodyReidInput.disabled = locked;
-  faceReidInput.disabled = locked;
+  for (const r of [...detectorRadios, ...reidRadios]) r.disabled = locked;
   loadModelsButton.disabled = locked;
 }
 
 /**
- * Load exactly the models for the currently-ticked cues, then lock the
+ * Load exactly the models for the chosen detector + re-ID, then lock the
  * selection and enable the source buttons. Configure once, up front, so it's
  * unambiguous which models are running before any video is loaded.
  */
 async function loadSelectedModels(): Promise<void> {
-  appearanceReid = reidInput.checked;
-  bodyReid = bodyReidInput.checked;
-  faceReid = faceReidInput.checked;
+  detectorChoice = checkedValue<DetectorChoice>(detectorRadios, 'bodypix');
+  reidChoice = checkedValue<ReidChoice>(reidRadios, 'body');
+  appearanceReid = reidChoice === 'colour';
+  bodyReid = reidChoice === 'body';
+  faceReid = reidChoice === 'face';
   setModelSelectionLocked(true);
   loadModelsButton.textContent = 'Loading models…';
   try {
-    await ensureModelLoaded(); // MoveNet detector (+ forces webgl backend)
+    await ensureDetectorLoaded();
     if (bodyReid) {
       setBodyState('loading…');
       await ensureBodyModelLoaded();
@@ -375,7 +404,10 @@ async function loadSelectedModels(): Promise<void> {
     startButton.disabled = false;
     loadVideoButton.disabled = false;
     loadModelsButton.textContent = 'Models loaded ✓';
-    setStatus('Models loaded — start a webcam or load a video file.');
+    setStatus(
+      `Loaded: ${detectorLabel(detectorChoice)} · re-ID ${reidLabel(reidChoice)}. ` +
+        'Start a webcam or load a video file.',
+    );
   } catch (err) {
     setModelSelectionLocked(false); // let the user retry / change selection
     loadModelsButton.textContent = 'Load models';
@@ -383,6 +415,13 @@ async function loadSelectedModels(): Promise<void> {
     // eslint-disable-next-line no-console
     console.error('[HeadTracker] model load failed:', err);
   }
+}
+
+function detectorLabel(d: DetectorChoice): string {
+  return d === 'bodypix' ? 'BodyPix segmentation' : 'MoveNet pose';
+}
+function reidLabel(r: ReidChoice): string {
+  return { none: 'none', colour: 'colour histogram', body: 'MobileNet body embedding', face: 'face-api face embedding' }[r];
 }
 
 loadModelsButton.addEventListener('click', () => {

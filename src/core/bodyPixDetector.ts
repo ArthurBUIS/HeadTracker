@@ -105,10 +105,25 @@ export class BodyPixHeadDetector implements HeadDetector {
     return out;
   }
 
-  /** Adapt BodyPix's `{position, score, part}` to the shared keypoint shape. */
+  /**
+   * Adapt BodyPix's `{position, score, part}` to the shared keypoint shape.
+   * BodyPix (PoseNet) names parts in camelCase (`leftShoulder`) but the shared
+   * head geometry uses MoveNet's snake_case (`left_shoulder`) — normalise, or
+   * every head lookup silently misses and no heads are detected at all.
+   */
   private toKeypoints(keypoints: BodyPixKeypoint[]): PoseKeypoint2D[] {
-    return keypoints.map((k) => ({ x: k.position.x, y: k.position.y, score: k.score, name: k.part }));
+    return keypoints.map((k) => ({
+      x: k.position.x,
+      y: k.position.y,
+      score: k.score,
+      name: camelToSnake(k.part),
+    }));
   }
+}
+
+/** `leftShoulder` → `left_shoulder`; already-snake names pass through. */
+function camelToSnake(name: string): string {
+  return name.replace(/([A-Z])/g, '_$1').toLowerCase();
 }
 
 /** Tight bounding box of a person's mask, or null if the mask is empty. */
