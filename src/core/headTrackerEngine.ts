@@ -35,6 +35,7 @@ import {
 } from './tracker';
 import type {
   Box,
+  BodyEmbedder,
   FaceEmbedder,
   FrameSize,
   HeadDetection,
@@ -86,13 +87,20 @@ export interface HeadTrackerEngineConfig {
    */
   faceReid: boolean;
   /**
+   * Enable whole-body-embedding re-ID: when a `BodyEmbedder` is set (via
+   * `setBodyEmbedder`), embed each person's body crop each round and attach
+   * it — an any-angle cue stronger than colour. No-op with no embedder.
+   * Toggle via `setBodyReid`.
+   */
+  bodyReid: boolean;
+  /**
    * How long (wall-clock) a lost id stays re-identifiable. Converted to
    * tracker gallery rounds using the current interval.
    */
   reidMemorySeconds: number;
   /**
-   * Max time to wait for the injected face embedder each round before
-   * giving up on it for that round. A hard cap so a slow/hanging face model
+   * Max time to wait for the injected face/body embedders each round before
+   * giving up on them for that round. A hard cap so a slow/hanging model
    * can never stall the detection loop (which would stop streams appearing).
    */
   faceEmbedTimeoutMs: number;
@@ -119,6 +127,7 @@ export const DEFAULT_ENGINE_CONFIG: HeadTrackerEngineConfig = {
   trackCoastSeconds: 2.0,
   appearanceReid: true,
   faceReid: false,
+  bodyReid: false,
   reidMemorySeconds: 30,
   faceEmbedTimeoutMs: 3000,
   lostStreamLingerSeconds: 30,
@@ -143,6 +152,10 @@ export interface DetectionDiagnostics {
   facesDetected: number;
   /** Of those, how many were matched to a head and attached. */
   facesAttached: number;
+  /** Whether body re-ID ran this round (enabled AND an embedder is set). */
+  bodyReidActive: boolean;
+  /** How many bodies were embedded and attached this round. */
+  bodiesEmbedded: number;
 }
 
 export interface HeadTrackerCallbacks {
@@ -209,6 +222,14 @@ export class HeadTrackerEngine {
 
   /** Optional face detector+embedder for face-based re-ID (injected). */
   private faceEmbedder: FaceEmbedder | null = null;
+
+  /** Optional whole-body embedder for body-based re-ID (injected). */
+  private bodyEmbedder: BodyEmbedder | null = null;
+
+  /** Reused offscreen canvas for cropping a body region to embed. */
+  private bodyCanvas: HTMLCanvasElement | null = null;
+
+  private bodyCtx: CanvasRenderingContext2D | null = null;
 
   /** Monotonic detection-round counter for diagnostics. */
   private roundCounter = 0;
@@ -321,6 +342,21 @@ export class HeadTrackerEngine {
   /** Whether face re-ID is on AND an embedder is available. */
   isFaceReidActive(): boolean {
     return this.config.faceReid && this.faceEmbedder !== null;
+  }
+
+  /** Inject (or clear) the whole-body embedder used for body re-ID. */
+  setBodyEmbedder(embedder: BodyEmbedder | null): void {
+    this.bodyEmbedder = embedder;
+  }
+
+  /** Turn whole-body-embedding re-identification on/off at runtime. */
+  setBodyReid(enabled: boolean): void {
+    this.config.bodyReid = enabled;
+  }
+
+  /** Whether body re-ID is on AND an embedder is available. */
+  isBodyReidActive(): boolean {
+    return this.config.bodyReid && this.bodyEmbedder !== null;
   }
 
   private clampInterval(intervalMs: number): number {
@@ -497,6 +533,60 @@ export class HeadTrackerEngine {
     }
   }
 
+  /**
+   * Crop each detection's body box and embed it with the injected body
+   * embedder, attaching the vector to the detection. Sequential (one CNN
+   * forward per person); each embed is time-capped so it can't stall the
+   * loop. Returns how many bodies got an embedding.
+   */
+  private async attachBodyEmbeddings(
+    detections: HeadDetection[],
+    frame: FrameSize,
+  ): Promise<number> {
+    const source = this.source;
+    if (!source || !this.bodyEmbedder) return 0;
+    if (!this.bodyCtx) {
+      this.bodyCanvas = document.createElement('canvas');
+      this.bodyCanvas.width = 224;
+      this.bodyCanvas.height = 224;
+      this.bodyCtx = this.bodyCanvas.getContext('2d', { willReadFrequently: true });
+    }
+    const ctx = this.bodyCtx;
+    const canvas = this.bodyCanvas;
+    if (!ctx || !canvas) return 0;
+
+    let embedded = 0;
+    for (const detection of detections) {
+      const region = this.clampBox(detection.bodyBox ?? detection, frame);
+      if (!region) continue;
+      try {
+        ctx.drawImage(source, region.x, region.y, region.width, region.height, 0, 0, 224, 224);
+        const vector = await this.withTimeout(
+          this.bodyEmbedder.embed(canvas),
+          this.config.faceEmbedTimeoutMs,
+        );
+        if (vector) {
+          detection.bodyEmbedding = vector;
+          embedded += 1;
+        }
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error('[HeadTracker] body embedding failed:', err);
+      }
+    }
+    return embedded;
+  }
+
+  /** Clamp a box to the frame; null if it degenerates to < 2px. */
+  private clampBox(box: Box, frame: FrameSize): Box | null {
+    const x = Math.max(0, Math.min(box.x, frame.width - 1));
+    const y = Math.max(0, Math.min(box.y, frame.height - 1));
+    const width = Math.min(box.width, frame.width - x);
+    const height = Math.min(box.height, frame.height - y);
+    if (width < 2 || height < 2) return null;
+    return { x, y, width, height };
+  }
+
   private async runDetectionRound(): Promise<void> {
     if (!this.running || this.detecting || !this.source) return;
     if (!this.frameSize()) return; // video not ready yet
@@ -513,6 +603,10 @@ export class HeadTrackerEngine {
       if (this.isFaceReidActive()) {
         faceStats = await this.attachFaceDescriptors(detections);
       }
+      let bodiesEmbedded = 0;
+      if (this.isBodyReidActive() && frame) {
+        bodiesEmbedded = await this.attachBodyEmbeddings(detections, frame);
+      }
       const { active, removedIds } = this.tracker.update(detections);
       this.reconcileSlots(active, removedIds);
       this.roundCounter += 1;
@@ -524,6 +618,8 @@ export class HeadTrackerEngine {
         faceReidActive: this.isFaceReidActive(),
         facesDetected: faceStats.detected,
         facesAttached: faceStats.attached,
+        bodyReidActive: this.isBodyReidActive(),
+        bodiesEmbedded,
       });
     } catch (err) {
       // Detection failures must not kill the render loop; log and move on.

@@ -36,16 +36,24 @@ back as a new number (the "one person → 8 heads" bug). So each track also
 carries appearance cues:
 
 - **Torso colour histogram** (`appearance.ts`) — an HSV histogram of the
-  clothing. Works from **any angle**, including people turned away; the
-  always-on backbone.
+  clothing. Cheap, any-angle; the always-on fallback.
+- **Whole-body embedding** (`bodyEmbedding.ts`) — a CNN feature vector of the
+  body crop (MobileNet deep features by default), compared by cosine
+  similarity. Works from **any angle** (including facing away) and separates
+  look-alikes far better than colour, because it encodes texture/pattern/shape
+  — the **any-angle backbone**. Toggle with **Body re-ID** (on by default).
 - **Face embedding** (`faceEmbedding.ts`) — a 128-D descriptor from face-api's
-  FaceNet-style FaceRecognitionNet, a *much* stronger cue that separates
-  **look-alikes** (same clothes, different face) that colour can't. Only
-  present when a face is visible, so it's a **booster** layered on the colour
-  backbone, not a replacement. Toggle with **Face re-ID**.
+  FaceNet-style FaceRecognitionNet, the *most* discriminative cue, but only
+  when a face is visible. A precise **booster**. Toggle with **Face re-ID**
+  (opt-in; heavier).
 
-The tracker prefers the face embedding when both a track and a detection have
-one (weighted `faceWeight`, 0.85), and falls back to colour otherwise.
+The tracker uses the strongest cue a track and detection share, in priority
+**face → body → colour** (`reidSimilarity`), each with its own weight
+(`faceWeight` 0.85, `bodyWeight` 0.75, `appearanceWeight` 0.6).
+
+> The default body embedder is MobileNet **deep features** — a solid,
+> self-contained baseline. A purpose-trained re-ID model (OSNet) would be more
+> discriminative and drops into the same injected `BodyEmbedder` interface.
 
 Association runs in three phases (`tracker.ts`): (1) **primary** — one
 **optimal (Hungarian) assignment** over a cost that **fuses** spatial
@@ -103,11 +111,11 @@ Two source modes:
   real-time playback speed). Best way to test against pre-recorded footage.
 
 The **Detection interval** slider (0.2–2 s) re-runs detection more or less
-often; it applies live to a running session. The **Appearance re-ID**
-checkbox toggles identity recovery by clothing colour; **Face re-ID** adds
-the 128-D face descriptor on top (loads face-api models on first enable).
-Turn either off to feel how much they help — Face re-ID especially when
-people are dressed alike.
+often; it applies live to a running session. The re-ID checkboxes stack:
+**Appearance re-ID** (clothing colour), **Body re-ID** (whole-body embedding,
+the any-angle backbone, on by default), and **Face re-ID** (face descriptor,
+opt-in/heavier). Each loads its model on first enable; toggle them to feel
+the difference — Body/Face especially when people are dressed alike.
 
 The left pane is the source; the grid on the right is one 200×200 tracked
 stream per detected head, each labelled with its stable id. Walk out of frame
@@ -158,6 +166,7 @@ HeadTracker/
 │   │   ├── tracker.ts          identity association (fused-cost + appearance + gallery)
 │   │   ├── assignment.ts       Hungarian optimal min-cost assignment
 │   │   ├── appearance.ts       torso colour-histogram descriptors for re-ID
+│   │   ├── bodyEmbedding.ts    whole-body embedding re-ID cue (cosine sim)
 │   │   ├── faceEmbedding.ts    128-D face-descriptor re-ID cue + face→head map
 │   │   ├── moveNetDetector.ts  MoveNet pose → head boxes from keypoints (active)
 │   │   ├── cocoSsdDetector.ts  coco-ssd body → head boxes (kept for selector)
@@ -171,15 +180,13 @@ HeadTracker/
 
 ## Known prototype limits
 
-- **Face re-ID only helps when faces are visible.** For people turned away
-  it falls back to the colour histogram, which still can't separate
-  look-alikes — so a same-clothes crossing where neither face shows can still
-  swap. A learned whole-body re-ID embedding would cover that gap behind the
-  same interface. `faceWeight` / `appearanceWeight` (in `tracker.ts`) tune
-  the cue balance.
-- Face embedding adds cost: it runs face-api (detector + landmarks +
-  recognition) each detection round. Fine at the room scale here; for many
-  people or a fast interval, budget accordingly.
+- The default body embedder is **MobileNet ImageNet features**, not a
+  purpose-trained re-ID model — good, but it can still confuse very similar
+  people. Swapping in OSNet (via the same `BodyEmbedder`) is the upgrade.
+- Re-ID cues add cost: the body embedder runs one CNN forward **per person**
+  each round; face re-ID runs face-api's 3-model pipeline. Fine at room scale;
+  for many people or a fast interval, budget accordingly (or offload to a
+  Web Worker — a planned next step).
 - The facing-away head estimate is shoulder geometry (a fixed rise above the
   shoulder line), so it's approximate for unusual postures — tune
   `shoulderHeadScale` / `shoulderHeadRise` in `moveNetDetector.ts`.

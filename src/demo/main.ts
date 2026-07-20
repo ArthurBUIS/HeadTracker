@@ -20,6 +20,7 @@
 // resolve heads from behind via shoulder geometry.
 import * as tf from '@tensorflow/tfjs';
 import * as poseDetection from '@tensorflow-models/pose-detection';
+import * as mobilenet from '@tensorflow-models/mobilenet';
 // The **nobundle** face-api build imports the app's external @tensorflow/tfjs
 // instead of inlining its own, so face recognition shares the ONE tfjs engine
 // MoveNet already uses (avoids the "two TensorFlow globals" crash).
@@ -30,6 +31,7 @@ import {
   type PoseDetectorLike,
   type FaceEmbedder,
   type FaceObservation,
+  type BodyEmbedder,
 } from '../core';
 
 // face-api hosts the SSD / landmark / recognition weights under /model.
@@ -47,16 +49,55 @@ const intervalInput = document.getElementById('interval') as HTMLInputElement;
 const intervalLabel = document.getElementById('intervalLabel') as HTMLElement;
 const reidInput = document.getElementById('reid') as HTMLInputElement;
 const faceReidInput = document.getElementById('faceReid') as HTMLInputElement;
+const bodyReidInput = document.getElementById('bodyReid') as HTMLInputElement;
 
 const tileById = new Map<number, HTMLElement>();
 
 let engine: HeadTrackerEngine | null = null;
 let poseDetector: poseDetection.PoseDetector | null = null;
 let faceModelsLoaded = false;
+let mobilenetModel: mobilenet.MobileNet | null = null;
 let currentObjectUrl: string | null = null;
 let detectionIntervalMs = Number(intervalInput.value);
 let appearanceReid = reidInput.checked;
 let faceReid = faceReidInput.checked;
+let bodyReid = bodyReidInput.checked;
+
+/** Whole-body embedder: MobileNet pooled deep features of a body crop. */
+const bodyEmbedder: BodyEmbedder = {
+  async embed(cropped): Promise<Float32Array> {
+    const model = mobilenetModel;
+    if (!model) return new Float32Array();
+    const embeddingTensor = tf.tidy(() => model.infer(cropped, true) as tf.Tensor);
+    const data = await embeddingTensor.data();
+    embeddingTensor.dispose();
+    return new Float32Array(data);
+  },
+};
+
+/** Load MobileNet once (feature extractor for the body embedding). */
+async function ensureBodyModelLoaded(): Promise<void> {
+  if (mobilenetModel) return;
+  await tf.ready();
+  mobilenetModel = await mobilenet.load({ version: 2, alpha: 1.0 });
+}
+
+/** Turn body re-ID on for the running engine, loading MobileNet on demand. */
+async function activateBodyReid(): Promise<void> {
+  if (!engine) return;
+  try {
+    setBodyState('loading…');
+    await ensureBodyModelLoaded();
+    if (!engine) return;
+    engine.setBodyEmbedder(bodyEmbedder);
+    engine.setBodyReid(true);
+    setBodyState('active');
+  } catch (err) {
+    setBodyState('FAILED to load');
+    // eslint-disable-next-line no-console
+    console.error('[HeadTracker] body model load failed:', err);
+  }
+}
 
 /** face-api face detector + 128-D embedder, wrapping the FaceEmbedder API. */
 const faceEmbedder: FaceEmbedder = {
@@ -122,12 +163,19 @@ function setStatus(text: string): void {
 }
 
 let faceState = 'off';
+let bodyState = 'off';
 let lastDiagLine = '';
 function renderDebug(): void {
-  debugEl.textContent = `face models: ${faceState}   |   ${lastDiagLine || '(waiting for detection…)'}`;
+  debugEl.textContent =
+    `face: ${faceState} · body: ${bodyState}   |   ` +
+    `${lastDiagLine || '(waiting for detection…)'}`;
 }
 function setFaceState(state: string): void {
   faceState = state;
+  renderDebug();
+}
+function setBodyState(state: string): void {
+  bodyState = state;
   renderDebug();
 }
 
@@ -234,8 +282,8 @@ function startEngineOnSource(): void {
         lastDiagLine =
           `round ${d.round} · dets ${d.detections} · tracks ${d.activeTracks} · ` +
           `appearance ${d.appearanceReidEnabled ? 'on' : 'off'} · ` +
-          `face ${d.faceReidActive ? 'on' : 'off'} · ` +
-          `faces ${d.facesDetected}→${d.facesAttached} attached`;
+          `face ${d.faceReidActive ? 'on' : 'off'} · faces ${d.facesDetected}→${d.facesAttached} · ` +
+          `body ${d.bodyReidActive ? 'on' : 'off'} · bodies ${d.bodiesEmbedded}`;
         renderDebug();
         // eslint-disable-next-line no-console
         console.log(`[HeadTracker] ${lastDiagLine}`);
@@ -245,6 +293,7 @@ function startEngineOnSource(): void {
   );
   engine.start(sourceVideo);
   if (faceReid) void activateFaceReid();
+  if (bodyReid) void activateBodyReid();
 
   // Expose for ad-hoc inspection from the devtools console.
   (window as unknown as { headEngine: HeadTrackerEngine }).headEngine = engine;
@@ -328,6 +377,16 @@ faceReidInput.addEventListener('change', () => {
   } else {
     engine?.setFaceReid(false);
     setFaceState('off');
+  }
+});
+
+bodyReidInput.addEventListener('change', () => {
+  bodyReid = bodyReidInput.checked;
+  if (bodyReid) {
+    void activateBodyReid();
+  } else {
+    engine?.setBodyReid(false);
+    setBodyState('off');
   }
 });
 

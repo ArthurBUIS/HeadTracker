@@ -41,6 +41,7 @@ detections.
 | `src/core/tracker.ts` | **Identity: which box is which.** 3-phase association (fused spatial+appearance Hungarian match → appearance rescue → gallery re-ID) + contamination guard + birth/death; `setMaxMisses`, `setGalleryMaxRounds`. | `HeadIdentityTracker`, `TrackedHead`, `TrackerConfig`, `DEFAULT_TRACKER_CONFIG` |
 | `src/core/assignment.ts` | Hungarian (Kuhn–Munkres) min-cost assignment; rectangular via padding, forbidden pairs via a disallow cost. | `solveMinCostAssignment`, `NO_ASSIGNMENT` |
 | `src/core/faceEmbedding.ts` | 128-D face-descriptor distance/affinity/EMA + face→head box assignment. DOM-free; the embedder itself is injected. | `faceDistance`, `faceAffinity`, `blendFace`, `matchFacesToBoxes`, `FaceDescriptor` |
+| `src/core/bodyEmbedding.ts` | Whole-body embedding cosine affinity + EMA. DOM-free; the CNN (MobileNet by default) is injected. | `bodyAffinity`, `blendBody`, `BodyDescriptor` |
 | `src/core/appearance.ts` | Torso HSV colour-histogram descriptor + intersection similarity + EMA blend. DOM-free (operates on RGBA data). | `computeHsvHistogram`, `appearanceSimilarity`, `blendAppearance`, `AppearanceDescriptor` |
 | `src/core/moveNetDetector.ts` | **Active detector.** MoveNet pose keypoints → head box (face keypoints, else shoulder geometry) + body box. | `MoveNetHeadDetector`, `PoseDetectorLike`, `DEFAULT_MOVENET_DETECTOR_CONFIG` |
 | `src/core/cocoSsdDetector.ts` | Alt detector: coco-ssd body boxes → top-centre head boxes. | `CocoSsdHeadDetector`, `CocoSsdModelLike`, `DEFAULT_COCO_SSD_DETECTOR_CONFIG` |
@@ -64,11 +65,12 @@ frame: each slot's smoother EMAs toward its target and draws the crop.
 
 ## Dependencies
 - **Runtime:** `@tensorflow-models/pose-detection` + `@tensorflow/tfjs`
-  (active MoveNet detector); `@vladmandic/face-api` **nobundle** build for the
-  face-embedding re-ID (shares the one tfjs engine — see FaceDetection.jsx in
-  portals); `@tensorflow-models/coco-ssd` (alt detector). Core imports none of
-  them — only DOM/canvas/MediaStream (Electron-renderer safe); detector and
-  face embedder are injected.
+  (active MoveNet detector); `@tensorflow-models/mobilenet` (body-embedding
+  re-ID); `@vladmandic/face-api` **nobundle** build (face-embedding re-ID,
+  shares the one tfjs engine — see FaceDetection.jsx in portals);
+  `@tensorflow-models/coco-ssd` (alt detector). Core imports none of them —
+  only DOM/canvas/MediaStream (Electron-renderer safe); the detector and both
+  embedders are injected. All models run on the forced **webgl** backend.
 - **Dev:** `vite` (demo dev server + `esbuild` bundling), `typescript`
   (strict, `tsc --noEmit`). tsconfig mirrors portals: `es2021`, strict,
   `noUnusedLocals/Parameters`.
@@ -111,13 +113,24 @@ frame: each slot's smoother EMAs toward its target and draws the crop.
   colour (`appearanceWeight` 0.6, `appearanceThreshold` 0.55). Gallery entries
   store both cues. Toggle live via `setAppearanceReid` / `setFaceReid`; with
   neither cue phase 1 is spatial-only.
-- **Face embedding = look-alike fix.** Colour can't separate two people in
-  the same clothes, so a same-clothes crossing swaps; the face embedding
-  (face-api FaceRecognitionNet, nobundle build sharing the one tfjs engine)
-  distinguishes them by face. A booster only — absent when facing away, so
-  colour stays the any-angle backbone. Verified headless (same-clothes
-  crossing kept-with-face / swaps-without; gallery look-alike not reclaimed)
-  and in-browser (3 nets load + run on shared engine, no two-globals crash).
+- **Three re-ID cues, priority face → body → colour** (`reidSimilarity`
+  returns the best shared cue's affinity + `kind`; `reidWeight`/`reidThreshold`
+  /`reidRank` pick per-kind constants). Face = most discriminative but needs a
+  visible face; **body embedding = any-angle backbone** (works facing away,
+  separates look-alikes by texture/pattern, unlike colour); colour = cheap
+  fallback. Each cue EMA-updated and stored in the gallery.
+- **Body embedding (the look-alike + facing-away fix).** A CNN feature vector
+  of the body crop (`attachBodyEmbeddings` → injected `BodyEmbedder`; demo =
+  MobileNet deep features, 1280-D, cosine similarity). Runs one forward per
+  person per round, time-capped like face. Default embedder is MobileNet
+  ImageNet features (baseline); OSNet drops into the same interface. Verified
+  headless (facing-away same-clothes crossing kept-with-body / swaps-without;
+  gallery look-alike not reclaimed) and in-browser (MobileNet loads + embeds
+  1280-D on the shared webgl engine).
+- **Face embedding.** face-api FaceRecognitionNet (nobundle, shared engine),
+  128-D, the precise booster when a face is visible. Opt-in (heavier). Runs on
+  the forced webgl backend (webgpu hung); embed is time-capped so it can't
+  stall the loop. Verified headless + in-browser.
 - **Two swap defences (why crossings don't trade ids).** (1) Fusing
   appearance into the phase-1 cost + optimal assignment (`assignment.ts`)
   means that within the gate identity follows clothing, not the nearest box —
@@ -173,10 +186,13 @@ frame: each slot's smoother EMAs toward its target and draws the crop.
   MoveNet head geometry, EMA glide + clamp); no committed test suite yet.
 
 ## TODO(verify) / next steps
-- **Learned whole-body re-ID embedding** (DeepSORT-style) to cover the
-  remaining gap: same-clothes look-alikes crossing while BOTH face away (face
-  cue absent, colour can't separate). Slots behind the same reid interface.
+- **Upgrade the body embedder to OSNet** (purpose-trained re-ID via
+  onnxruntime-web) — the current MobileNet-features baseline is decent but not
+  re-ID-optimised. Drops into the injected `BodyEmbedder`.
+- **Offload embedders to a Web Worker + OffscreenCanvas** so per-person CNN
+  inference never hitches the render loop (the perf lever).
 - **Motion prediction (Kalman)** to disambiguate crossings from trajectory.
+- **Rendering polish** (framing/headroom, dead-zone, HQ resampling) — brainstormed, not started.
 - **In-page model selector** (MoveNet ↔ coco-ssd ↔ face-api): all three
   exist behind `HeadDetector`; the demo UI toggle + shared tfjs engine
   wiring are not built yet.

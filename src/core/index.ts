@@ -70,7 +70,13 @@ export {
   type FaceDescriptor,
 } from './faceEmbedding';
 
-export type { FaceObservation, FaceEmbedder } from './types';
+export {
+  bodyAffinity,
+  blendBody,
+  type BodyDescriptor,
+} from './bodyEmbedding';
+
+export type { FaceObservation, FaceEmbedder, BodyEmbedder } from './types';
 
 export {
   HeadCropSmoother,

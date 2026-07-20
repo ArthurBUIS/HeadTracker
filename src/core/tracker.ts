@@ -35,8 +35,12 @@ import {
   type AppearanceDescriptor,
 } from './appearance';
 import { NO_ASSIGNMENT, solveMinCostAssignment } from './assignment';
+import { blendBody, bodyAffinity, type BodyDescriptor } from './bodyEmbedding';
 import { blendFace, faceAffinity, type FaceDescriptor } from './faceEmbedding';
 import type { Box, HeadDetection } from './types';
+
+/** Which appearance cue an affinity came from (priority: face > body > colour). */
+type ReidKind = 'face' | 'body' | 'colour' | 'none';
 
 /** Cost marking a (track, detection) pair as forbidden in the assignment. */
 const DISALLOWED_COST = 1e8;
@@ -66,6 +70,8 @@ export interface TrackedHead {
   appearance?: AppearanceDescriptor;
   /** EMA of this track's 128-D face embedding (undefined until a face seen). */
   faceDescriptor?: FaceDescriptor;
+  /** EMA of this track's whole-body embedding (undefined until observed). */
+  bodyEmbedding?: BodyDescriptor;
 }
 
 /** An id kept in memory after its track died, for gallery re-identification. */
@@ -73,6 +79,7 @@ interface GalleryEntry {
   id: number;
   appearance?: AppearanceDescriptor;
   faceDescriptor?: FaceDescriptor;
+  bodyEmbedding?: BodyDescriptor;
   /** Rounds since the track died; expired past `galleryMaxRounds`. */
   age: number;
 }
@@ -136,6 +143,16 @@ export interface TrackerConfig {
   faceMatchAffinity: number;
   /** EMA weight on a fresh face descriptor when updating a track. */
   faceEmaWeight: number;
+  /**
+   * Weight of a BODY-embedding affinity vs spatial in the phase-1 cost.
+   * Between face and colour: a learned body embedding is more discriminative
+   * than colour and works from any angle, but less certain than a face.
+   */
+  bodyWeight: number;
+  /** Min body affinity (cosine) to accept a body-based rescue / gallery re-ID. */
+  bodyMatchAffinity: number;
+  /** EMA weight on a fresh body descriptor when updating a track. */
+  bodyEmaWeight: number;
 }
 
 export const DEFAULT_TRACKER_CONFIG: TrackerConfig = {
@@ -153,6 +170,9 @@ export const DEFAULT_TRACKER_CONFIG: TrackerConfig = {
   faceDistanceNorm: 1.2,
   faceMatchAffinity: 0.5,
   faceEmaWeight: 0.2,
+  bodyWeight: 0.75,
+  bodyMatchAffinity: 0.6,
+  bodyEmaWeight: 0.2,
 };
 
 /** Result of one association round, for the engine to reconcile streams. */
@@ -294,7 +314,7 @@ export class HeadIdentityTracker {
       const reid = this.reidSimilarity(this.tracks[ti], detections[di]);
       const updateAppearance =
         !occludedDet[di] &&
-        (!reid.hasEvidence || reid.sim >= this.config.appearanceUpdateFloor);
+        (reid.kind === 'none' || reid.sim >= this.config.appearanceUpdateFloor);
       this.applyMatch(this.tracks[ti], detections[di], updateAppearance);
     }
   }
@@ -313,39 +333,66 @@ export class HeadIdentityTracker {
 
     const spatialAffinity = Math.max(iou, gate > 0 ? Math.max(0, 1 - distance / gate) : 0);
     const reid = this.reidSimilarity(track, detection);
-    if (reid.hasEvidence) {
-      const w = reid.isFace ? this.config.faceWeight : this.config.appearanceWeight;
+    if (reid.kind !== 'none') {
+      const w = this.reidWeight(reid.kind);
       return 1 - (w * reid.sim + (1 - w) * spatialAffinity);
     }
     return 1 - spatialAffinity;
   }
 
   /**
-   * Re-ID affinity between two appearance-carrying things. Prefers the FACE
-   * embedding when both sides have one (far more discriminative than colour);
-   * otherwise uses the torso colour histogram. `hasEvidence` is false when
-   * there's no shared cue (e.g. both faces away, only spatial to go on).
+   * Re-ID affinity between two appearance-carrying things, using the best
+   * cue both share, in priority order: FACE (most discriminative, needs a
+   * visible face) → BODY embedding (any-angle backbone) → COLOUR histogram
+   * (cheap fallback). `kind` is 'none' when they share no cue (only spatial).
    */
   private reidSimilarity(
-    a: { appearance?: AppearanceDescriptor; faceDescriptor?: FaceDescriptor },
-    b: { appearance?: AppearanceDescriptor; faceDescriptor?: FaceDescriptor },
-  ): { sim: number; isFace: boolean; hasEvidence: boolean } {
+    a: {
+      appearance?: AppearanceDescriptor;
+      faceDescriptor?: FaceDescriptor;
+      bodyEmbedding?: BodyDescriptor;
+    },
+    b: {
+      appearance?: AppearanceDescriptor;
+      faceDescriptor?: FaceDescriptor;
+      bodyEmbedding?: BodyDescriptor;
+    },
+  ): { sim: number; kind: ReidKind } {
     if (a.faceDescriptor && b.faceDescriptor) {
       return {
         sim: faceAffinity(a.faceDescriptor, b.faceDescriptor, this.config.faceDistanceNorm),
-        isFace: true,
-        hasEvidence: true,
+        kind: 'face',
       };
     }
-    if (a.appearance && b.appearance) {
-      return { sim: appearanceSimilarity(a.appearance, b.appearance), isFace: false, hasEvidence: true };
+    if (a.bodyEmbedding && b.bodyEmbedding) {
+      return { sim: bodyAffinity(a.bodyEmbedding, b.bodyEmbedding), kind: 'body' };
     }
-    return { sim: 0, isFace: false, hasEvidence: false };
+    if (a.appearance && b.appearance) {
+      return { sim: appearanceSimilarity(a.appearance, b.appearance), kind: 'colour' };
+    }
+    return { sim: 0, kind: 'none' };
   }
 
-  /** Min similarity to accept a rescue / gallery match, per cue type. */
-  private reidThreshold(isFace: boolean): number {
-    return isFace ? this.config.faceMatchAffinity : this.config.appearanceThreshold;
+  /** Phase-1 cost weight for a cue kind (higher = trusts appearance more). */
+  private reidWeight(kind: ReidKind): number {
+    if (kind === 'face') return this.config.faceWeight;
+    if (kind === 'body') return this.config.bodyWeight;
+    return this.config.appearanceWeight;
+  }
+
+  /** Min similarity to accept a rescue / gallery match, per cue kind. */
+  private reidThreshold(kind: ReidKind): number {
+    if (kind === 'face') return this.config.faceMatchAffinity;
+    if (kind === 'body') return this.config.bodyMatchAffinity;
+    return this.config.appearanceThreshold;
+  }
+
+  /** Rank cue kinds so stronger cues win in rescue / gallery selection. */
+  private reidRank(kind: ReidKind): number {
+    if (kind === 'face') return 3;
+    if (kind === 'body') return 2;
+    if (kind === 'colour') return 1;
+    return 0;
   }
 
   /** Flag detections that overlap another detection (mutual occlusion). */
@@ -368,19 +415,19 @@ export class HeadIdentityTracker {
     trackMatched: boolean[],
     detMatched: boolean[],
   ): void {
-    const pairs: { ti: number; di: number; sim: number; isFace: boolean }[] = [];
+    const pairs: { ti: number; di: number; sim: number; rank: number }[] = [];
     for (let ti = 0; ti < this.tracks.length; ti += 1) {
       if (trackMatched[ti]) continue;
       for (let di = 0; di < detections.length; di += 1) {
         if (detMatched[di]) continue;
         const r = this.reidSimilarity(this.tracks[ti], detections[di]);
-        if (r.hasEvidence && r.sim >= this.reidThreshold(r.isFace)) {
-          pairs.push({ ti, di, sim: r.sim, isFace: r.isFace });
+        if (r.kind !== 'none' && r.sim >= this.reidThreshold(r.kind)) {
+          pairs.push({ ti, di, sim: r.sim, rank: this.reidRank(r.kind) });
         }
       }
     }
-    // Prefer face matches (more reliable), then higher similarity.
-    pairs.sort((p, q) => Number(q.isFace) - Number(p.isFace) || q.sim - p.sim);
+    // Prefer stronger cues (face > body > colour), then higher similarity.
+    pairs.sort((p, q) => q.rank - p.rank || q.sim - p.sim);
     for (const pair of pairs) {
       if (trackMatched[pair.ti] || detMatched[pair.di]) continue;
       trackMatched[pair.ti] = true;
@@ -394,15 +441,15 @@ export class HeadIdentityTracker {
     const usedGalleryIds = new Set<number>();
     for (let di = 0; di < detections.length; di += 1) {
       const det = detections[di];
-      if (detMatched[di] || (!det.appearance && !det.faceDescriptor)) continue;
+      if (detMatched[di] || (!det.appearance && !det.faceDescriptor && !det.bodyEmbedding)) continue;
       let best: GalleryEntry | null = null;
       let bestScore = -1;
       for (const entry of this.gallery) {
         if (usedGalleryIds.has(entry.id)) continue;
         const r = this.reidSimilarity(entry, det);
-        if (!r.hasEvidence || r.sim < this.reidThreshold(r.isFace)) continue;
-        // Rank face matches above any colour match, then by similarity.
-        const score = (r.isFace ? 1 : 0) + r.sim;
+        if (r.kind === 'none' || r.sim < this.reidThreshold(r.kind)) continue;
+        // Rank stronger cues above weaker ones, then by similarity.
+        const score = this.reidRank(r.kind) + r.sim;
         if (score > bestScore) {
           bestScore = score;
           best = entry;
@@ -423,11 +470,15 @@ export class HeadIdentityTracker {
     for (const track of this.tracks) {
       if (track.misses <= this.config.maxMisses) {
         survivors.push(track);
-      } else if (track.confirmed && (track.appearance || track.faceDescriptor)) {
+      } else if (
+        track.confirmed &&
+        (track.appearance || track.faceDescriptor || track.bodyEmbedding)
+      ) {
         this.gallery.push({
           id: track.id,
           appearance: track.appearance,
           faceDescriptor: track.faceDescriptor,
+          bodyEmbedding: track.bodyEmbedding,
           age: 0,
         });
       }
@@ -456,6 +507,7 @@ export class HeadIdentityTracker {
     if (updateAppearance) {
       track.appearance = this.mergeAppearance(track.appearance, detection.appearance);
       track.faceDescriptor = this.mergeFace(track.faceDescriptor, detection.faceDescriptor);
+      track.bodyEmbedding = this.mergeBody(track.bodyEmbedding, detection.bodyEmbedding);
     }
     if (!track.confirmed && track.hits >= this.config.minHits) track.confirmed = true;
   }
@@ -484,6 +536,7 @@ export class HeadIdentityTracker {
       confirmed,
       appearance: detection.appearance ? detection.appearance.slice() : undefined,
       faceDescriptor: detection.faceDescriptor ? detection.faceDescriptor.slice() : undefined,
+      bodyEmbedding: detection.bodyEmbedding ? detection.bodyEmbedding.slice() : undefined,
     };
   }
 
@@ -503,5 +556,14 @@ export class HeadIdentityTracker {
     if (!next) return previous;
     if (!previous) return next.slice();
     return blendFace(previous, next, this.config.faceEmaWeight);
+  }
+
+  private mergeBody(
+    previous: BodyDescriptor | undefined,
+    next: BodyDescriptor | undefined,
+  ): BodyDescriptor | undefined {
+    if (!next) return previous;
+    if (!previous) return next.slice();
+    return blendBody(previous, next, this.config.bodyEmaWeight);
   }
 }

@@ -45,6 +45,12 @@ export interface HeadDetection extends Box {
    * by face); absent for people facing away. See `faceEmbedding.ts`.
    */
   faceDescriptor?: import('./faceEmbedding').FaceDescriptor;
+  /**
+   * Optional whole-body feature embedding of this person's body crop. The
+   * any-angle re-ID backbone — works when facing away, stronger than colour.
+   * See `bodyEmbedding.ts`.
+   */
+  bodyEmbedding?: import('./bodyEmbedding').BodyDescriptor;
 }
 
 /** A face detected in the frame: its box plus 128-D embedding. */
@@ -60,6 +66,15 @@ export interface FaceObservation {
  */
 export interface FaceEmbedder {
   embedFaces(source: FrameSource): Promise<FaceObservation[]>;
+}
+
+/**
+ * Embeds one already-cropped body image into a feature vector. Injected into
+ * the engine (the demo wires MobileNet); the engine crops each person's body
+ * box and passes it here. Keeps the core decoupled from any specific model.
+ */
+export interface BodyEmbedder {
+  embed(cropped: FrameSource): Promise<import('./bodyEmbedding').BodyDescriptor>;
 }
 
 /**
