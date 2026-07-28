@@ -37,6 +37,10 @@ const intervalLabel = document.getElementById('intervalLabel') as HTMLElement;
 const loadModelButton = document.getElementById('loadModel') as HTMLButtonElement;
 const modelFileInput = document.getElementById('modelFile') as HTMLInputElement;
 const modelUrlInput = document.getElementById('modelUrl') as HTMLInputElement;
+const outWInput = document.getElementById('outW') as HTMLInputElement;
+const outHInput = document.getElementById('outH') as HTMLInputElement;
+const outSizeLabel = document.getElementById('outSizeLabel') as HTMLElement;
+const snap169Button = document.getElementById('out169') as HTMLButtonElement;
 
 const tileById = new Map<number, HTMLElement>();
 
@@ -45,6 +49,8 @@ let session: ort.InferenceSession | null = null;
 let headDetector: Yolov8HeadDetector | null = null;
 let currentObjectUrl: string | null = null;
 let detectionIntervalMs = Number(intervalInput.value);
+let outputWidth = Number(outWInput.value);
+let outputHeight = Number(outHInput.value);
 
 function setStatus(text: string): void {
   statusEl.textContent = text;
@@ -105,8 +111,6 @@ function addTile(id: number, stream: MediaStream): void {
   video.playsInline = true;
   video.muted = true;
   video.srcObject = stream;
-  video.width = 320;
-  video.height = 180;
   const label = document.createElement('div');
   label.className = 'tile-label';
   label.textContent = `stream #${id}`;
@@ -158,7 +162,11 @@ function startEngineOnSource(): void {
     },
   };
   if (!headDetector) throw new Error('Model not loaded');
-  engine = new SimpleFaceEngine(headDetector, callbacks, { detectionIntervalMs });
+  engine = new SimpleFaceEngine(headDetector, callbacks, {
+    detectionIntervalMs,
+    outputWidth,
+    outputHeight,
+  });
   engine.start(sourceVideo);
   (window as unknown as { simpleEngine: SimpleFaceEngine }).simpleEngine = engine;
 }
@@ -218,6 +226,29 @@ intervalInput.addEventListener('input', () => {
   intervalLabel.textContent = formatSeconds(detectionIntervalMs);
   engine?.setDetectionInterval(detectionIntervalMs);
 });
+
+/** Apply the current output size to the CSS tiles and the running engine. */
+function applyOutputSize(): void {
+  outSizeLabel.textContent = `${outputWidth} × ${outputHeight}`;
+  document.documentElement.style.setProperty('--tile-w', `${outputWidth}px`);
+  document.documentElement.style.setProperty('--tile-h', `${outputHeight}px`);
+  engine?.setOutputSize(outputWidth, outputHeight);
+}
+outWInput.addEventListener('input', () => {
+  outputWidth = Number(outWInput.value);
+  applyOutputSize();
+});
+outHInput.addEventListener('input', () => {
+  outputHeight = Number(outHInput.value);
+  applyOutputSize();
+});
+snap169Button.addEventListener('click', () => {
+  // Keep width, snap height to the nearest step giving ~16:9.
+  outputHeight = Math.round((outputWidth * 9) / 16 / 10) * 10;
+  outHInput.value = String(outputHeight);
+  applyOutputSize();
+});
+applyOutputSize();
 
 loadModelButton.addEventListener('click', () => {
   if (headDetector) return;

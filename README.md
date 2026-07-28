@@ -14,7 +14,8 @@
 >
 > **Demo:** `npm run dev` → choose a YOLOv8-head `.onnx` (**file** or **URL**)
 > → **Load model** → **Start webcam** / **Load video** → adjust the
-> detection-period slider. Bring your own YOLOv8-head model — any standard
+> detection-period and **output-size** sliders (live; "Snap to 16:9" restores
+> the aspect). Bring your own YOLOv8-head model — any standard
 > Ultralytics detection export (input `[1,3,640,640]`, output `[1,4+nc,8400]`)
 > works; the decoder auto-handles the class count and tensor orientation.
 > Key files: [`yolov8HeadDetector.ts`](src/core/simple/yolov8HeadDetector.ts),

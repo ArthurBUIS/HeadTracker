@@ -174,6 +174,21 @@ export class SimpleFaceEngine {
     return this.config.detectionIntervalMs;
   }
 
+  /**
+   * Resize the output streams live. Existing slot canvases are resized (the
+   * captureStream keeps producing, now at the new resolution); the aspect
+   * ratio (width/height) drives the crop shape, so this can change 16:9 ↔
+   * other ratios on the fly.
+   */
+  setOutputSize(width: number, height: number): void {
+    this.config.outputWidth = Math.max(1, Math.round(width));
+    this.config.outputHeight = Math.max(1, Math.round(height));
+    for (const slot of this.slots.values()) {
+      slot.canvas.width = this.config.outputWidth;
+      slot.canvas.height = this.config.outputHeight;
+    }
+  }
+
   private get aspect(): number {
     return this.config.outputWidth / this.config.outputHeight;
   }
