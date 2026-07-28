@@ -175,18 +175,16 @@ export class SimpleFaceEngine {
   }
 
   /**
-   * Resize the output streams live. Existing slot canvases are resized (the
-   * captureStream keeps producing, now at the new resolution); the aspect
-   * ratio (width/height) drives the crop shape, so this can change 16:9 ↔
-   * other ratios on the fly.
+   * Set how big a region is extracted from the SOURCE video around each head,
+   * as a multiple of the head size (larger = more context / more zoomed out).
+   * Takes effect on the next detection round; the crop then glides to it.
    */
-  setOutputSize(width: number, height: number): void {
-    this.config.outputWidth = Math.max(1, Math.round(width));
-    this.config.outputHeight = Math.max(1, Math.round(height));
-    for (const slot of this.slots.values()) {
-      slot.canvas.width = this.config.outputWidth;
-      slot.canvas.height = this.config.outputHeight;
-    }
+  setCropPadding(padding: number): void {
+    this.config.cropPadding = Math.max(0.1, padding);
+  }
+
+  getCropPadding(): number {
+    return this.config.cropPadding;
   }
 
   private get aspect(): number {

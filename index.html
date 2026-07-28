@@ -8,8 +8,6 @@
       :root {
         color-scheme: light dark;
         font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-        --tile-w: 320px;
-        --tile-h: 180px;
       }
       body { margin: 0; padding: 1.5rem; display: flex; flex-direction: column; gap: 1rem; }
       header { display: flex; flex-direction: column; gap: 0.6rem; }
@@ -36,16 +34,16 @@
         display: grid;
         grid-auto-flow: column;
         grid-template-rows: repeat(3, auto);
-        grid-auto-columns: var(--tile-w);
+        grid-auto-columns: 320px;
         gap: 1rem;
         align-content: start;
         overflow-x: auto;
       }
       .tile {
-        position: relative; width: var(--tile-w); height: var(--tile-h); border-radius: 10px;
+        position: relative; width: 320px; height: 180px; border-radius: 10px;
         overflow: hidden; background: #0006; box-shadow: 0 1px 6px #0004;
       }
-      .tile video { width: var(--tile-w); height: var(--tile-h); object-fit: cover; display: block; }
+      .tile video { width: 320px; height: 180px; object-fit: cover; display: block; }
       .tile.lost { outline: 2px dashed #e0a800; }
       .tile.lost video { filter: grayscale(0.85) brightness(0.7); }
       .tile-label {
@@ -77,15 +75,12 @@
         </label>
       </div>
       <div class="row">
-        <strong>Output size:</strong>
+        <strong>Extracted box size:</strong>
         <label class="interval-control">
-          W <input id="outW" type="range" min="120" max="960" step="10" value="320" />
+          <input id="cropSize" type="range" min="1" max="6" step="0.1" value="2.6" />
+          <span id="cropSizeLabel">2.6× head</span>
         </label>
-        <label class="interval-control">
-          H <input id="outH" type="range" min="80" max="540" step="10" value="180" />
-        </label>
-        <span id="outSizeLabel">320 × 180</span>
-        <button id="out169" type="button">Snap to 16:9</button>
+        <span class="caption">how much of the source frame each stream covers around the head</span>
       </div>
       <span id="status">Choose a YOLOv8-head .onnx (file or URL), then “Load model”.</span>
       <div id="debug">(waiting for detection…)</div>
