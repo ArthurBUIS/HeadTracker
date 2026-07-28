@@ -51,6 +51,8 @@ detections.
 | `src/core/headCrop.ts` | Per-track smoothed square crop geometry, clamped to frame. | `HeadCropSmoother`, `HeadCropConfig`, `CropRect` |
 | `src/core/headTrackerEngine.ts` | Orchestrator: two loops, slot lifecycle, N output `MediaStream`s. | `HeadTrackerEngine`, `HeadStream`, `HeadTrackerEngineConfig`, `HeadTrackerCallbacks` |
 | `src/core/index.ts` | Public barrel — the portals-bound module boundary. | (re-exports) |
+| `src/core/simple/proximityTracker.ts` | **Simple pipeline (this branch).** Nearest-distance greedy matching + 5 s "lost" hysteresis; no embeddings. | `ProximityTracker`, `FaceObservation`, `SimpleTrack` |
+| `src/core/simple/simpleFaceEngine.ts` | **Simple pipeline.** Face detector → proximity tracker → per-face **300×200** captureStream, glided 3:2 crop. | `SimpleFaceEngine`, `FaceCenterDetector`, `SimpleFaceCallbacks` |
 | `src/demo/main.ts` | Webcam **or looping video file** → engine → grid of tiles. Exclusive **detector** + **re-ID** radios (exact model names) locked by an explicit **Load models** step. **Not shipped.** | `startWebcam`, `loadVideoFile`, `loadSelectedModels` |
 | `index.html` | Demo page (source pane + output grid; webcam + file-load buttons). | — |
 

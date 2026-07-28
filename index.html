@@ -3,177 +3,77 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>HeadTracker — multi-person head streams</title>
+    <title>HeadTracker — simple face pipeline</title>
     <style>
       :root {
         color-scheme: light dark;
         font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
       }
-      body {
-        margin: 0;
-        padding: 1.5rem;
-        display: flex;
-        flex-direction: column;
-        gap: 1rem;
-      }
-      header {
-        display: flex;
-        align-items: center;
-        gap: 1rem;
-        flex-wrap: wrap;
-      }
-      h1 {
-        font-size: 1.1rem;
-        margin: 0;
-      }
-      #status {
-        opacity: 0.75;
-        font-size: 0.9rem;
-      }
+      body { margin: 0; padding: 1.5rem; display: flex; flex-direction: column; gap: 1rem; }
+      header { display: flex; flex-direction: column; gap: 0.6rem; }
+      h1 { font-size: 1.1rem; margin: 0; }
+      .row { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+      #status { opacity: 0.8; font-size: 0.9rem; }
       button {
-        font-size: 0.95rem;
-        padding: 0.5rem 1rem;
-        border-radius: 8px;
-        border: 1px solid currentColor;
-        background: transparent;
-        cursor: pointer;
+        font-size: 0.95rem; padding: 0.45rem 0.9rem; border-radius: 8px;
+        border: 1px solid currentColor; background: transparent; cursor: pointer;
       }
-      button:disabled {
-        opacity: 0.5;
-        cursor: default;
+      button:disabled { opacity: 0.5; cursor: default; }
+      .interval-control { display: inline-flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; }
+      .interval-control input[type='range'] { width: 200px; }
+      #intervalLabel { min-width: 3ch; font-variant-numeric: tabular-nums; }
+      #debug {
+        font-family: ui-monospace, monospace; font-size: 0.9rem;
+        padding: 0.5rem 0.75rem; border-radius: 8px; background: #0000000d; border: 1px solid #8884;
       }
-      .row {
-        display: flex;
-        align-items: center;
-        gap: 0.75rem;
-        flex-wrap: wrap;
-        width: 100%;
-      }
-      .interval-control {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.5rem;
-        font-size: 0.9rem;
-      }
-      .interval-control input[type='range'] {
-        width: 160px;
-      }
-      #intervalLabel {
-        min-width: 3ch;
-        font-variant-numeric: tabular-nums;
-      }
-      .panes {
-        display: flex;
-        gap: 1.5rem;
-        flex-wrap: wrap;
-        align-items: flex-start;
-      }
-      .source-pane {
-        display: flex;
-        flex-direction: column;
-        gap: 0.35rem;
-      }
-      .source-pane video {
-        width: 480px;
-        max-width: 90vw;
-        border-radius: 10px;
-        background: #0003;
-      }
-      .caption {
-        font-size: 0.8rem;
-        opacity: 0.7;
-      }
-      #grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, 200px);
-        gap: 1rem;
-        align-content: start;
-      }
+      .panes { display: flex; gap: 1.5rem; flex-wrap: wrap; align-items: flex-start; }
+      .source-pane { display: flex; flex-direction: column; gap: 0.35rem; }
+      .source-pane video { width: 480px; max-width: 90vw; border-radius: 10px; background: #0003; }
+      .caption { font-size: 0.8rem; opacity: 0.7; }
+      #grid { display: grid; grid-template-columns: repeat(auto-fill, 300px); gap: 1rem; align-content: start; }
       .tile {
-        position: relative;
-        width: 200px;
-        height: 200px;
-        border-radius: 10px;
-        overflow: hidden;
-        background: #0006;
-        box-shadow: 0 1px 6px #0004;
+        position: relative; width: 300px; height: 200px; border-radius: 10px;
+        overflow: hidden; background: #0006; box-shadow: 0 1px 6px #0004;
       }
-      .tile video {
-        width: 200px;
-        height: 200px;
-        object-fit: cover;
-        display: block;
-      }
-      .tile.lost {
-        outline: 2px dashed #e0a800;
-      }
-      .tile.lost video {
-        filter: grayscale(0.85) brightness(0.7);
-      }
-      .tile.lost .tile-label {
-        background: #b8860baa;
-      }
+      .tile video { width: 300px; height: 200px; object-fit: cover; display: block; }
+      .tile.lost { outline: 2px dashed #e0a800; }
+      .tile.lost video { filter: grayscale(0.85) brightness(0.7); }
       .tile-label {
-        position: absolute;
-        left: 6px;
-        bottom: 6px;
-        padding: 2px 8px;
-        border-radius: 6px;
-        font-size: 0.75rem;
-        background: #000a;
-        color: #fff;
+        position: absolute; left: 6px; bottom: 6px; padding: 2px 8px; border-radius: 6px;
+        font-size: 0.75rem; background: #000a; color: #fff;
       }
+      .tile.lost .tile-label { background: #b8860baa; }
     </style>
   </head>
   <body>
     <header>
-      <h1>HeadTracker</h1>
+      <h1>HeadTracker — simple face pipeline</h1>
       <div class="row">
-        <strong>1.&nbsp;Detector&nbsp;(pick one):</strong>
-        <label class="interval-control"><input type="radio" name="detector" value="bodypix" checked /> BodyPix — MobileNetV1 (segmentation, gives masks)</label>
-        <label class="interval-control"><input type="radio" name="detector" value="movenet" /> MoveNet — MultiPose Lightning (pose)</label>
+        <strong>Model:</strong>
+        <span>face-api SSD MobileNet v1 (face detection)</span>
+        <button id="loadModel">Load model</button>
       </div>
       <div class="row">
-        <strong>2.&nbsp;Re-ID&nbsp;(pick one):</strong>
-        <label class="interval-control"><input type="radio" name="reid" value="none" /> None (position only)</label>
-        <label class="interval-control"><input type="radio" name="reid" value="colour" /> Colour histogram (torso HSV)</label>
-        <label class="interval-control"><input type="radio" name="reid" value="body" checked /> Body embedding — MobileNet v2</label>
-        <label class="interval-control"><input type="radio" name="reid" value="face" /> Face embedding — face-api (SSD + ResNet, FaceNet-style)</label>
-      </div>
-      <div class="row">
-        <button id="loadModels">Load models</button>
-        <strong>3.&nbsp;Source:</strong>
+        <strong>Source:</strong>
         <button id="start" disabled>Start webcam</button>
         <button id="loadVideo" disabled>Load video file…</button>
         <input id="videoFile" type="file" accept="video/*" hidden />
         <label class="interval-control">
-          Detection interval:
+          Detection period:
           <input id="interval" type="range" min="200" max="2000" step="100" value="500" />
           <span id="intervalLabel">0.5 s</span>
         </label>
       </div>
-      <span id="status">Pick a detector and a re-ID method, then click “Load models”.</span>
+      <span id="status">Click “Load model”.</span>
+      <div id="debug">(waiting for detection…)</div>
     </header>
-    <div
-      id="debug"
-      style="
-        font-family: ui-monospace, monospace;
-        font-size: 0.9rem;
-        padding: 0.5rem 0.75rem;
-        border-radius: 8px;
-        background: #0000000d;
-        border: 1px solid #8884;
-      "
-    >
-      face: off · body: off | (waiting for detection…)
-    </div>
     <div class="panes">
       <div class="source-pane">
         <video id="source" muted playsinline controls></video>
         <span class="caption" id="sourceCaption">Source stream</span>
       </div>
       <div>
-        <div class="caption">Per-participant 200×200 output streams:</div>
+        <div class="caption">Per-face 300×200 output streams:</div>
         <div id="grid"></div>
       </div>
     </div>

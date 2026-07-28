@@ -1,5 +1,17 @@
 # HeadTracker
 
+> **Branch `simple-face-pipeline`.** This branch runs an alternate,
+> **embedding-free** pipeline (`src/core/simple`): face-api SSD detects faces
+> periodically, a **nearest-distance proximity tracker** matches them across
+> runs (with a 5 s "lost" hysteresis), and each face becomes a **300×200**
+> output stream. No re-ID models. The full identity pipeline (embeddings,
+> segmentation, etc.) documented below lives on `main`.
+>
+> **Simple pipeline demo:** `npm run dev` → **Load model** → **Start webcam** /
+> **Load video** → adjust the detection-period slider. The per-face
+> nearest-match logic is in [`proximityTracker.ts`](src/core/simple/proximityTracker.ts)
+> and the orchestrator in [`simpleFaceEngine.ts`](src/core/simple/simpleFaceEngine.ts).
+
 Prototype: take **one** live video stream and emit **N** live streams — one
 per participant in the room — where each output is a **200×200 square that
 stays centred on that participant's head**, recomputed every 2 seconds with
