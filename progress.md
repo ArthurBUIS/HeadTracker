@@ -52,7 +52,9 @@ detections.
 | `src/core/headTrackerEngine.ts` | Orchestrator: two loops, slot lifecycle, N output `MediaStream`s. | `HeadTrackerEngine`, `HeadStream`, `HeadTrackerEngineConfig`, `HeadTrackerCallbacks` |
 | `src/core/index.ts` | Public barrel — the portals-bound module boundary. | (re-exports) |
 | `src/core/simple/proximityTracker.ts` | **Simple pipeline (this branch).** Nearest-distance greedy matching + 5 s "lost" hysteresis; no embeddings. | `ProximityTracker`, `FaceObservation`, `SimpleTrack` |
-| `src/core/simple/simpleFaceEngine.ts` | **Simple pipeline.** Face detector → proximity tracker → per-face **300×200** captureStream, glided 3:2 crop. | `SimpleFaceEngine`, `FaceCenterDetector`, `SimpleFaceCallbacks` |
+| `src/core/simple/simpleFaceEngine.ts` | **Simple pipeline.** Injected detector → proximity tracker → per-head **300×200** captureStream, glided 3:2 crop. | `SimpleFaceEngine`, `FaceCenterDetector`, `SimpleFaceCallbacks` |
+| `src/core/simple/yolov8HeadDetector.ts` | YOLOv8 head detector (onnxruntime-web injected): letterbox preprocess → run → decode → NMS → head centres. | `Yolov8HeadDetector`, `Yolov8Runner` |
+| `src/core/simple/yoloPostprocess.ts` | Pure (DOM-free, testable) YOLOv8 decode + NMS + letterbox coordinate mapping. | `decodeYolov8`, `nonMaxSuppression`, `computeLetterbox`, `mapDetectionToSource` |
 | `src/demo/main.ts` | Webcam **or looping video file** → engine → grid of tiles. Exclusive **detector** + **re-ID** radios (exact model names) locked by an explicit **Load models** step. **Not shipped.** | `startWebcam`, `loadVideoFile`, `loadSelectedModels` |
 | `index.html` | Demo page (source pane + output grid; webcam + file-load buttons). | — |
 

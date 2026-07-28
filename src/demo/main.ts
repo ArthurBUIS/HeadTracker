@@ -1,23 +1,28 @@
 /**
- * Demo harness for the SIMPLE face pipeline (embedding-free).
+ * Demo harness for the SIMPLE pipeline (embedding-free).
  *
- * face-api SSD MobileNet detects faces periodically → ProximityTracker
- * nearest-matches them across runs → each tracked face becomes a 300×200
- * output stream. No embeddings, no re-ID models. This is the demo for the
- * `simple-face-pipeline` branch; it drives `src/core/simple`.
+ * A YOLOv8 HEAD detector (ONNX, via onnxruntime-web) runs periodically →
+ * ProximityTracker nearest-matches head centres across runs → each tracked
+ * head becomes a 300×200 output stream. No embeddings, no re-ID models. This
+ * is the demo for the `simple-face-pipeline` branch; it drives
+ * `src/core/simple`.
  */
 
-import * as tf from '@tensorflow/tfjs';
-// nobundle face-api shares the app's one tfjs engine (no "two globals" crash).
-import * as faceapi from '@vladmandic/face-api/dist/face-api.esm-nobundle.js';
+import * as ort from 'onnxruntime-web';
 
 import {
   SimpleFaceEngine,
-  type FaceCenterDetector,
+  Yolov8HeadDetector,
+  type Yolov8Runner,
   type SimpleFaceCallbacks,
 } from '../core/simple';
 
-const FACE_MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model';
+// Serve the onnxruntime WASM binaries from the CDN matching the installed
+// version, so Vite doesn't have to bundle them.
+ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.27.0/dist/';
+
+/** YOLOv8 square input side. Standard Ultralytics export is 640. */
+const YOLO_INPUT_SIZE = 640;
 
 const statusEl = document.getElementById('status') as HTMLElement;
 const debugEl = document.getElementById('debug') as HTMLElement;
@@ -30,11 +35,14 @@ const videoFileInput = document.getElementById('videoFile') as HTMLInputElement;
 const intervalInput = document.getElementById('interval') as HTMLInputElement;
 const intervalLabel = document.getElementById('intervalLabel') as HTMLElement;
 const loadModelButton = document.getElementById('loadModel') as HTMLButtonElement;
+const modelFileInput = document.getElementById('modelFile') as HTMLInputElement;
+const modelUrlInput = document.getElementById('modelUrl') as HTMLInputElement;
 
 const tileById = new Map<number, HTMLElement>();
 
 let engine: SimpleFaceEngine | null = null;
-let modelLoaded = false;
+let session: ort.InferenceSession | null = null;
+let headDetector: Yolov8HeadDetector | null = null;
 let currentObjectUrl: string | null = null;
 let detectionIntervalMs = Number(intervalInput.value);
 
@@ -45,39 +53,43 @@ function formatSeconds(ms: number): string {
   return `${(ms / 1000).toFixed(1)} s`;
 }
 
-/** face-api SSD face detector → face centres + sizes (no landmarks/descriptors). */
-const faceDetector: FaceCenterDetector = {
-  async detectFaces(source) {
-    const engineTf = (
-      faceapi.tf as unknown as { engine: () => { startScope(): void; endScope(): void } }
-    ).engine();
-    engineTf.startScope();
-    try {
-      const detections = await faceapi.detectAllFaces(
-        source,
-        new faceapi.SsdMobilenetv1Options({ minConfidence: 0.3 }),
-      );
-      return detections.map((d) => ({
-        cx: d.box.x + d.box.width / 2,
-        cy: d.box.y + d.box.height / 2,
-        size: d.box.height,
-      }));
-    } finally {
-      engineTf.endScope();
-    }
-  },
-};
-
+/**
+ * Load the YOLOv8 head model — from the chosen local .onnx file, else the URL
+ * — and build the detector. The ONNX runtime is wrapped as a `Yolov8Runner`.
+ */
 async function ensureModelLoaded(): Promise<void> {
-  if (modelLoaded) return;
-  try {
-    await tf.setBackend('webgl');
-  } catch {
-    /* fall back to whatever backend is available */
+  if (headDetector) return;
+  const file = modelFileInput.files?.[0];
+  const url = modelUrlInput.value.trim();
+  // Always create from a buffer (both file and URL). We fetch the URL
+  // ourselves rather than handing it to onnxruntime, whose own URL loader
+  // trips over HF redirects / external-data files.
+  let buffer: Uint8Array;
+  if (file) {
+    buffer = new Uint8Array(await file.arrayBuffer());
+  } else if (url) {
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`Could not fetch model (HTTP ${resp.status}).`);
+    buffer = new Uint8Array(await resp.arrayBuffer());
+  } else {
+    throw new Error('Choose a .onnx file or paste a model URL.');
   }
-  await tf.ready();
-  await faceapi.nets.ssdMobilenetv1.loadFromUri(FACE_MODEL_URL);
-  modelLoaded = true;
+  session = await ort.InferenceSession.create(buffer, { executionProviders: ['wasm'] });
+  const inputName = session.inputNames[0];
+  const outputName = session.outputNames[0];
+
+  const runner: Yolov8Runner = {
+    inputSize: YOLO_INPUT_SIZE,
+    async run(input) {
+      const s = session;
+      if (!s) throw new Error('Session not ready');
+      const tensor = new ort.Tensor('float32', input, [1, 3, YOLO_INPUT_SIZE, YOLO_INPUT_SIZE]);
+      const output = await s.run({ [inputName]: tensor });
+      const o = output[outputName];
+      return { data: o.data as Float32Array, dims: [...o.dims] };
+    },
+  };
+  headDetector = new Yolov8HeadDetector(runner);
 }
 
 function addTile(id: number, stream: MediaStream): void {
@@ -92,7 +104,7 @@ function addTile(id: number, stream: MediaStream): void {
   video.height = 200;
   const label = document.createElement('div');
   label.className = 'tile-label';
-  label.textContent = `face #${id}`;
+  label.textContent = `head #${id}`;
   tile.appendChild(video);
   tile.appendChild(label);
   gridEl.appendChild(tile);
@@ -103,7 +115,7 @@ function setTileLost(id: number, lost: boolean): void {
   if (!tile) return;
   tile.classList.toggle('lost', lost);
   const label = tile.querySelector('.tile-label');
-  if (label) label.textContent = lost ? `face #${id} (lost)` : `face #${id}`;
+  if (label) label.textContent = lost ? `head #${id} (lost)` : `head #${id}`;
 }
 function removeTile(id: number): void {
   tileById.get(id)?.remove();
@@ -140,7 +152,8 @@ function startEngineOnSource(): void {
         `(${d.lost} lost) · streams ${tileById.size}`;
     },
   };
-  engine = new SimpleFaceEngine(faceDetector, callbacks, { detectionIntervalMs });
+  if (!headDetector) throw new Error('Model not loaded');
+  engine = new SimpleFaceEngine(headDetector, callbacks, { detectionIntervalMs });
   engine.start(sourceVideo);
   (window as unknown as { simpleEngine: SimpleFaceEngine }).simpleEngine = engine;
 }
@@ -202,10 +215,10 @@ intervalInput.addEventListener('input', () => {
 });
 
 loadModelButton.addEventListener('click', () => {
-  if (modelLoaded) return;
+  if (headDetector) return;
   loadModelButton.disabled = true;
   loadModelButton.textContent = 'Loading…';
-  setStatus('Loading face-api SSD MobileNet…');
+  setStatus('Loading YOLOv8 head model (ONNX)…');
   ensureModelLoaded()
     .then(() => {
       startButton.disabled = false;

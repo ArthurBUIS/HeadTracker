@@ -23,3 +23,19 @@ export {
   type SimpleFaceCallbacks,
   type SimpleFaceDiagnostics,
 } from './simpleFaceEngine';
+
+export {
+  Yolov8HeadDetector,
+  DEFAULT_YOLOV8_HEAD_DETECTOR_CONFIG,
+  type Yolov8Runner,
+  type Yolov8HeadDetectorConfig,
+} from './yolov8HeadDetector';
+
+export {
+  computeLetterbox,
+  mapDetectionToSource,
+  decodeYolov8,
+  nonMaxSuppression,
+  type Detection,
+  type Letterbox,
+} from './yoloPostprocess';

@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>HeadTracker — simple face pipeline</title>
+    <title>HeadTracker — simple YOLOv8-head pipeline</title>
     <style>
       :root {
         color-scheme: light dark;
@@ -47,10 +47,12 @@
   </head>
   <body>
     <header>
-      <h1>HeadTracker — simple face pipeline</h1>
+      <h1>HeadTracker — simple YOLOv8-head pipeline</h1>
       <div class="row">
-        <strong>Model:</strong>
-        <span>face-api SSD MobileNet v1 (face detection)</span>
+        <strong>YOLOv8 head model (ONNX):</strong>
+        <input id="modelFile" type="file" accept=".onnx" />
+        <span>or URL</span>
+        <input id="modelUrl" type="text" placeholder="https://…/yolov8-head.onnx" size="34" />
         <button id="loadModel">Load model</button>
       </div>
       <div class="row">
@@ -64,7 +66,7 @@
           <span id="intervalLabel">0.5 s</span>
         </label>
       </div>
-      <span id="status">Click “Load model”.</span>
+      <span id="status">Choose a YOLOv8-head .onnx (file or URL), then “Load model”.</span>
       <div id="debug">(waiting for detection…)</div>
     </header>
     <div class="panes">

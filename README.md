@@ -1,16 +1,22 @@
 # HeadTracker
 
 > **Branch `simple-face-pipeline`.** This branch runs an alternate,
-> **embedding-free** pipeline (`src/core/simple`): face-api SSD detects faces
-> periodically, a **nearest-distance proximity tracker** matches them across
-> runs (with a 5 s "lost" hysteresis), and each face becomes a **300×200**
-> output stream. No re-ID models. The full identity pipeline (embeddings,
-> segmentation, etc.) documented below lives on `main`.
+> **embedding-free** pipeline (`src/core/simple`): a **YOLOv8 head detector**
+> (ONNX, via onnxruntime-web) runs periodically, a **nearest-distance
+> proximity tracker** matches head centres across runs (with a 5 s "lost"
+> hysteresis), and each head becomes a **300×200** output stream. No re-ID
+> models. The full identity pipeline (embeddings, segmentation, etc.)
+> documented below lives on `main`.
 >
-> **Simple pipeline demo:** `npm run dev` → **Load model** → **Start webcam** /
-> **Load video** → adjust the detection-period slider. The per-face
-> nearest-match logic is in [`proximityTracker.ts`](src/core/simple/proximityTracker.ts)
-> and the orchestrator in [`simpleFaceEngine.ts`](src/core/simple/simpleFaceEngine.ts).
+> **Demo:** `npm run dev` → choose a YOLOv8-head `.onnx` (**file** or **URL**)
+> → **Load model** → **Start webcam** / **Load video** → adjust the
+> detection-period slider. Bring your own YOLOv8-head model — any standard
+> Ultralytics detection export (input `[1,3,640,640]`, output `[1,4+nc,8400]`)
+> works; the decoder auto-handles the class count and tensor orientation.
+> Key files: [`yolov8HeadDetector.ts`](src/core/simple/yolov8HeadDetector.ts),
+> [`yoloPostprocess.ts`](src/core/simple/yoloPostprocess.ts),
+> [`proximityTracker.ts`](src/core/simple/proximityTracker.ts),
+> [`simpleFaceEngine.ts`](src/core/simple/simpleFaceEngine.ts).
 
 Prototype: take **one** live video stream and emit **N** live streams — one
 per participant in the room — where each output is a **200×200 square that

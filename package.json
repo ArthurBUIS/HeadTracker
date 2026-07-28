@@ -16,7 +16,8 @@
     "@tensorflow-models/mobilenet": "^2.1.1",
     "@tensorflow-models/pose-detection": "^2.1.3",
     "@tensorflow/tfjs": "^4.20.0",
-    "@vladmandic/face-api": "^1.7.15"
+    "@vladmandic/face-api": "^1.7.15",
+    "onnxruntime-web": "^1.27.0"
   },
   "devDependencies": {
     "typescript": "^5.8.2",
