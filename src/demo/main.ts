@@ -105,11 +105,11 @@ function addTile(id: number, stream: MediaStream): void {
   video.playsInline = true;
   video.muted = true;
   video.srcObject = stream;
-  video.width = 300;
-  video.height = 200;
+  video.width = 320;
+  video.height = 180;
   const label = document.createElement('div');
   label.className = 'tile-label';
-  label.textContent = `head #${id}`;
+  label.textContent = `stream #${id}`;
   tile.appendChild(video);
   tile.appendChild(label);
   gridEl.appendChild(tile);
@@ -120,7 +120,7 @@ function setTileLost(id: number, lost: boolean): void {
   if (!tile) return;
   tile.classList.toggle('lost', lost);
   const label = tile.querySelector('.tile-label');
-  if (label) label.textContent = lost ? `head #${id} (lost)` : `head #${id}`;
+  if (label) label.textContent = lost ? `stream #${id} (lost)` : `stream #${id}`;
 }
 function removeTile(id: number): void {
   tileById.get(id)?.remove();
@@ -153,8 +153,8 @@ function startEngineOnSource(): void {
     onFaceStreamRemoved: (id) => removeTile(id),
     onDiagnostics: (d) => {
       debugEl.textContent =
-        `round ${d.round} · detected ${d.detected} · nb_faces ${d.faceCount} ` +
-        `(${d.lost} lost) · streams ${tileById.size}`;
+        `round ${d.round} · detected ${d.detected} · confirmed ${d.faceCount} ` +
+        `(${d.lost} lost, ${d.pending} pending) · streams ${d.groups}`;
     },
   };
   if (!headDetector) throw new Error('Model not loaded');

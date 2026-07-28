@@ -34,16 +34,16 @@
         display: grid;
         grid-auto-flow: column;
         grid-template-rows: repeat(3, auto);
-        grid-auto-columns: 300px;
+        grid-auto-columns: 320px;
         gap: 1rem;
         align-content: start;
         overflow-x: auto;
       }
       .tile {
-        position: relative; width: 300px; height: 200px; border-radius: 10px;
+        position: relative; width: 320px; height: 180px; border-radius: 10px;
         overflow: hidden; background: #0006; box-shadow: 0 1px 6px #0004;
       }
-      .tile video { width: 300px; height: 200px; object-fit: cover; display: block; }
+      .tile video { width: 320px; height: 180px; object-fit: cover; display: block; }
       .tile.lost { outline: 2px dashed #e0a800; }
       .tile.lost video { filter: grayscale(0.85) brightness(0.7); }
       .tile-label {
@@ -83,7 +83,7 @@
         <span class="caption" id="sourceCaption">Source stream</span>
       </div>
       <div>
-        <div class="caption">Per-face 300×200 output streams:</div>
+        <div class="caption">Per-head 320×180 (16:9) output streams — close heads merge:</div>
         <div id="grid"></div>
       </div>
     </div>

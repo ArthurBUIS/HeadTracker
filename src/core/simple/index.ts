@@ -13,6 +13,14 @@ export {
 } from './proximityTracker';
 
 export {
+  BoxGroupManager,
+  DEFAULT_GROUP_MANAGER_CONFIG,
+  type GroupInput,
+  type Group,
+  type GroupManagerConfig,
+} from './boxGrouping';
+
+export {
   SimpleFaceEngine,
   DEFAULT_SIMPLE_ENGINE_CONFIG,
   MIN_SIMPLE_INTERVAL_MS,

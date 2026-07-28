@@ -1,57 +1,63 @@
 /**
- * SimpleFaceEngine — the orchestrator for the embedding-free pipeline.
+ * SimpleFaceEngine — orchestrator for the embedding-free pipeline.
  *
- *   detect faces (every intervalMs)  →  ProximityTracker (nearest-match)
+ *   detect heads (every intervalMs)  →  ProximityTracker (confirm ≥ minHits)
+ *                                            │  confirmed tracks
+ *                                            ▼
+ *   BoxGroupManager (merge close boxes, hysteretic)  →  one stream per GROUP
  *                                            │
  *                                            ▼
- *   render loop (rAF)  →  per-track 300×200 crop  →  captureStream()
+ *   render loop (rAF)  →  per-group 16:9 crop  →  captureStream()
  *
- * A face detector is injected (the demo wires face-api SSD). Each tracked
- * face owns a hidden 300×200 canvas whose captureStream() is the output. The
- * crop is a 3:2 rectangle sized from the face box and EMA-glided toward the
- * latest centre, so it moves smoothly between the periodic detections; a lost
- * track keeps its stream frozen on its last spot until the tracker drops it.
- *
- * Framework-agnostic: DOM + canvas + MediaStream only.
+ * A group of one is a single head; a merged group frames all its members in
+ * one 16:9 crop. Detection runs off the main thread (the injected detector
+ * may use WebGPU), so the render loop keeps the tiles live between rounds.
  */
 
 import { clamp, emaStep, emaWeightForTimeConstant } from '../smoothing';
 import type { FrameSize, FrameSource } from '../types';
+import {
+  BoxGroupManager,
+  type GroupInput,
+  type GroupManagerConfig,
+} from './boxGrouping';
 import {
   ProximityTracker,
   type FaceObservation,
   type ProximityTrackerConfig,
 } from './proximityTracker';
 
-/** Detects faces in a frame, returning each face's centre + size. */
+/** Detects heads in a frame, returning each head's centre + size. */
 export interface FaceCenterDetector {
   detectFaces(source: FrameSource): Promise<FaceObservation[]>;
 }
 
 export interface SimpleFaceEngineConfig {
-  /** Output width in px. Spec: 300. */
+  /** Output width in px. Spec: 320 (16:9). */
   outputWidth: number;
-  /** Output height in px. Spec: 200. */
+  /** Output height in px. Spec: 180 (16:9). */
   outputHeight: number;
   /** Detection period in ms (the "toggle bar"). */
   detectionIntervalMs: number;
-  /** Crop height as a multiple of face size, before clamping. */
+  /** Crop box height as a multiple of head size. */
   cropPadding: number;
   /** EMA time constant for the crop glide (seconds). */
   smoothSeconds: number;
   /** Output canvas capture frame rate. */
   outputFps: number;
   tracker: Partial<ProximityTrackerConfig>;
+  grouping: Partial<GroupManagerConfig>;
 }
 
 export const DEFAULT_SIMPLE_ENGINE_CONFIG: SimpleFaceEngineConfig = {
-  outputWidth: 300,
-  outputHeight: 200,
+  outputWidth: 320,
+  outputHeight: 180,
   detectionIntervalMs: 500,
   cropPadding: 2.6,
   smoothSeconds: 0.4,
   outputFps: 30,
   tracker: {},
+  grouping: {},
 };
 
 export const MIN_SIMPLE_INTERVAL_MS = 200;
@@ -65,12 +71,16 @@ export interface FaceStream {
 
 export interface SimpleFaceDiagnostics {
   round: number;
-  /** Faces the detector returned this round. */
+  /** Heads the detector returned this round. */
   detected: number;
-  /** Tracks held (active + lost within hysteresis) — the stream count. */
+  /** Confirmed tracks (active + lost) — before merging. */
   faceCount: number;
-  /** How many held tracks are currently lost. */
+  /** Confirmed tracks currently lost. */
   lost: number;
+  /** Tracks still awaiting confirmation. */
+  pending: number;
+  /** Output groups/streams after merging. */
+  groups: number;
 }
 
 export interface SimpleFaceCallbacks {
@@ -81,20 +91,24 @@ export interface SimpleFaceCallbacks {
   onDiagnostics?: (d: SimpleFaceDiagnostics) => void;
 }
 
-interface FaceSlot {
+/** Smoothed crop target for a group, in source px. */
+interface CropTarget {
+  cx: number;
+  cy: number;
+  cropH: number;
+}
+
+interface GroupSlot {
   id: number;
   canvas: HTMLCanvasElement;
   ctx: CanvasRenderingContext2D;
   stream: MediaStream;
   lost: boolean;
-  /** Smoothed crop state, source px. */
+  /** Smoothed crop state. */
   cx: number;
   cy: number;
   cropH: number;
-  /** Latest target from the tracker. */
-  targetCx: number;
-  targetCy: number;
-  targetSize: number;
+  target: CropTarget;
 }
 
 export class SimpleFaceEngine {
@@ -102,7 +116,9 @@ export class SimpleFaceEngine {
 
   private readonly tracker: ProximityTracker;
 
-  private readonly slots = new Map<number, FaceSlot>();
+  private readonly groupManager: BoxGroupManager;
+
+  private readonly slots = new Map<number, GroupSlot>();
 
   private source: FrameSource | null = null;
 
@@ -126,6 +142,7 @@ export class SimpleFaceEngine {
     this.config = { ...DEFAULT_SIMPLE_ENGINE_CONFIG, ...config };
     this.config.detectionIntervalMs = this.clampInterval(this.config.detectionIntervalMs);
     this.tracker = new ProximityTracker(this.config.tracker);
+    this.groupManager = new BoxGroupManager(this.config.grouping);
   }
 
   start(source: FrameSource): void {
@@ -157,6 +174,10 @@ export class SimpleFaceEngine {
     return this.config.detectionIntervalMs;
   }
 
+  private get aspect(): number {
+    return this.config.outputWidth / this.config.outputHeight;
+  }
+
   private clampInterval(ms: number): number {
     if (!Number.isFinite(ms)) return DEFAULT_SIMPLE_ENGINE_CONFIG.detectionIntervalMs;
     return Math.min(MAX_SIMPLE_INTERVAL_MS, Math.max(MIN_SIMPLE_INTERVAL_MS, Math.round(ms)));
@@ -185,29 +206,28 @@ export class SimpleFaceEngine {
     try {
       const faces = await this.detector.detectFaces(this.source);
       const nowMs = performance.now();
-      const { tracks, removed } = this.tracker.update(faces, nowMs);
-      for (const id of removed) this.removeSlot(id);
+      const { tracks } = this.tracker.update(faces, nowMs);
 
-      let lostCount = 0;
-      for (const track of tracks) {
-        if (track.status === 'lost') lostCount += 1;
-        const slot = this.slots.get(track.id);
-        if (slot) {
-          slot.targetCx = track.cx;
-          slot.targetCy = track.cy;
-          slot.targetSize = track.size;
-          this.setSlotLost(slot, track.status === 'lost');
-        } else {
-          this.addSlot(track.id, track.cx, track.cy, track.size);
-        }
+      // Each confirmed track's crop box (16:9, sized from head size).
+      const inputs: GroupInput[] = [];
+      const lostById = new Map<number, boolean>();
+      for (const t of tracks) {
+        const boxH = Math.max(1, t.size * this.config.cropPadding);
+        inputs.push({ id: t.id, cx: t.cx, cy: t.cy, boxW: boxH * this.aspect, boxH });
+        lostById.set(t.id, t.status === 'lost');
       }
+      const inputById = new Map(inputs.map((i) => [i.id, i]));
+      const groups = this.groupManager.update(inputs);
+      this.reconcileGroupSlots(groups, inputById, lostById);
 
       this.roundCounter += 1;
       this.callbacks.onDiagnostics?.({
         round: this.roundCounter,
         detected: faces.length,
         faceCount: tracks.length,
-        lost: lostCount,
+        lost: tracks.filter((t) => t.status === 'lost').length,
+        pending: this.tracker.pendingCount,
+        groups: groups.length,
       });
     } catch (err) {
       // eslint-disable-next-line no-console
@@ -217,23 +237,67 @@ export class SimpleFaceEngine {
     }
   }
 
-  private addSlot(id: number, cx: number, cy: number, size: number): void {
+  private reconcileGroupSlots(
+    groups: { groupId: number; memberIds: number[] }[],
+    inputById: Map<number, GroupInput>,
+    lostById: Map<number, boolean>,
+  ): void {
+    const activeGroupIds = new Set(groups.map((g) => g.groupId));
+    for (const id of [...this.slots.keys()]) {
+      if (!activeGroupIds.has(id)) this.removeSlot(id);
+    }
+    for (const group of groups) {
+      const target = this.groupCropTarget(group.memberIds, inputById);
+      const lost = group.memberIds.every((id) => lostById.get(id));
+      const slot = this.slots.get(group.groupId);
+      if (slot) {
+        slot.target = target;
+        this.setSlotLost(slot, lost);
+      } else {
+        this.addSlot(group.groupId, target);
+      }
+    }
+  }
+
+  /** A 16:9 crop that covers every member box. */
+  private groupCropTarget(memberIds: number[], inputById: Map<number, GroupInput>): CropTarget {
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const id of memberIds) {
+      const b = inputById.get(id);
+      if (!b) continue;
+      minX = Math.min(minX, b.cx - b.boxW / 2);
+      maxX = Math.max(maxX, b.cx + b.boxW / 2);
+      minY = Math.min(minY, b.cy - b.boxH / 2);
+      maxY = Math.max(maxY, b.cy + b.boxH / 2);
+    }
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    const bw = maxX - minX;
+    const bh = maxY - minY;
+    // Grow the short axis so the box is 16:9 and contains both extents.
+    const cropH = Math.max(bh, bw / this.aspect);
+    return { cx, cy, cropH };
+  }
+
+  private addSlot(id: number, target: CropTarget): void {
     const canvas = document.createElement('canvas');
     canvas.width = this.config.outputWidth;
     canvas.height = this.config.outputHeight;
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new Error('[SimpleFace] 2D context unavailable');
     const stream = canvas.captureStream(this.config.outputFps);
-    const cropH = Math.max(1, size * this.config.cropPadding);
-    const slot: FaceSlot = {
+    const slot: GroupSlot = {
       id, canvas, ctx, stream, lost: false,
-      cx, cy, cropH, targetCx: cx, targetCy: cy, targetSize: size,
+      cx: target.cx, cy: target.cy, cropH: target.cropH, target,
     };
     this.slots.set(id, slot);
     this.callbacks.onFaceStreamAdded?.({ id, stream, canvas });
   }
 
-  private setSlotLost(slot: FaceSlot, lost: boolean): void {
+  private setSlotLost(slot: GroupSlot, lost: boolean): void {
     if (slot.lost === lost) return;
     slot.lost = lost;
     if (lost) this.callbacks.onFaceStreamLost?.(slot.id);
@@ -261,21 +325,18 @@ export class SimpleFaceEngine {
     const source = this.source;
     if (!source) return;
     const { outputWidth, outputHeight } = this.config;
-    const aspect = outputWidth / outputHeight; // 3:2
     const weight = emaWeightForTimeConstant(dt, this.config.smoothSeconds);
 
     for (const slot of this.slots.values()) {
-      // Glide centre + crop height toward the latest target.
-      slot.cx = emaStep(slot.cx, slot.targetCx, weight);
-      slot.cy = emaStep(slot.cy, slot.targetCy, weight);
-      slot.cropH = emaStep(slot.cropH, Math.max(1, slot.targetSize * this.config.cropPadding), weight);
+      slot.cx = emaStep(slot.cx, slot.target.cx, weight);
+      slot.cy = emaStep(slot.cy, slot.target.cy, weight);
+      slot.cropH = emaStep(slot.cropH, slot.target.cropH, weight);
 
-      // A 3:2 source rectangle around the centre, clamped to the frame.
       let cropH = Math.min(slot.cropH, frame.height);
-      let cropW = cropH * aspect;
+      let cropW = cropH * this.aspect;
       if (cropW > frame.width) {
         cropW = frame.width;
-        cropH = cropW / aspect;
+        cropH = cropW / this.aspect;
       }
       const sx = clamp(slot.cx - cropW / 2, 0, frame.width - cropW);
       const sy = clamp(slot.cy - cropH / 2, 0, frame.height - cropH);

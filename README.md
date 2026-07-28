@@ -2,11 +2,15 @@
 
 > **Branch `simple-face-pipeline`.** This branch runs an alternate,
 > **embedding-free** pipeline (`src/core/simple`): a **YOLOv8 head detector**
-> (ONNX, via onnxruntime-web) runs periodically, a **nearest-distance
-> proximity tracker** matches head centres across runs (with a 5 s "lost"
-> hysteresis), and each head becomes a **300×200** output stream. No re-ID
-> models. The full identity pipeline (embeddings, segmentation, etc.)
-> documented below lives on `main`.
+> (ONNX, via onnxruntime-web / WebGPU) runs periodically, a **nearest-distance
+> proximity tracker** matches head centres across runs. A new head must be
+> detected **3 rounds in a row** before it's streamed (false-positive guard);
+> a lost head keeps its stream for **5 s** (hysteresis). Heads that are **too
+> close merge** into one **320×180 (16:9)** stream — the centre of one box
+> inside the other merges them, and they only split again once their centres
+> are **> 200 px** apart (hysteresis, no flicker). No re-ID models. The full
+> identity pipeline (embeddings, segmentation, etc.) documented below lives
+> on `main`.
 >
 > **Demo:** `npm run dev` → choose a YOLOv8-head `.onnx` (**file** or **URL**)
 > → **Load model** → **Start webcam** / **Load video** → adjust the

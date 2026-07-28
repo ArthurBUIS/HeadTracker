@@ -1,63 +1,61 @@
 /**
- * Proximity tracker — the identity logic for the SIMPLE face pipeline.
+ * Proximity tracker — the identity logic for the SIMPLE pipeline.
  *
  * No embeddings, no Hungarian, no gallery. Each detection round we get a set
- * of face centres; we match them to the existing tracks by repeatedly taking
+ * of head centres; we match them to the existing tracks by repeatedly taking
  * the globally closest (track, detection) pair and removing both from play,
  * until one side is empty. Then:
- *   - leftover detections  → new tracks (a new stream each),
- *   - leftover tracks      → marked "lost": they keep their stream and still
- *     count, and stay matchable, for `lostSeconds` (hysteresis, so one or two
- *     missed detections don't drop a stream); a face reappearing near a lost
- *     track revives it. After `lostSeconds` unmatched, the track is dropped.
+ *   - leftover detections  → new (pending) tracks,
+ *   - leftover tracks      → a CONFIRMED track goes "lost" (keeps its stream
+ *     and stays matchable for `lostSeconds` — hysteresis so a missed
+ *     detection or two doesn't drop it); an UNCONFIRMED track is dropped.
  *
- * This unifies the three cases in the spec (count same / up / down): they all
- * fall out of "match nearest, birth the extra detections, age the extra
- * tracks toward death".
+ * A new track must be matched `minHits` rounds IN A ROW before it is
+ * confirmed and gets a stream — this suppresses false positives. (Missing a
+ * round drops an unconfirmed track, so the count really is consecutive.)
  */
 
-/** A detected face: its centre and a size (for framing the crop). */
 export interface FaceObservation {
   cx: number;
   cy: number;
-  /** Representative face size in source px (e.g. box height). */
+  /** Representative head size in source px (e.g. box height). */
   size: number;
 }
 
 export interface SimpleTrack {
-  /** Stable id, assigned at birth, never reused. */
   id: number;
   cx: number;
   cy: number;
   size: number;
-  /** 'active' = matched recently; 'lost' = coasting within the hysteresis. */
+  /** Consecutive matched rounds (resets by drop-on-miss while unconfirmed). */
+  hits: number;
+  /** True once `hits >= minHits`; only confirmed tracks are streamed. */
+  confirmed: boolean;
   status: 'active' | 'lost';
-  /** When the track first went lost (ms), else null. */
   lostSinceMs: number | null;
 }
 
 export interface ProximityTrackerConfig {
-  /** How long a lost track keeps its stream and stays matchable (seconds). */
+  /** Consecutive detections a new track needs before it's confirmed/streamed. */
+  minHits: number;
+  /** How long a lost (confirmed) track keeps its stream and stays matchable. */
   lostSeconds: number;
-  /**
-   * Optional cap on match distance (source px). A (track, detection) pair
-   * farther apart than this is never matched. `Infinity` = no cap (pure
-   * nearest-match, as specified).
-   */
+  /** Optional cap on match distance (source px); `Infinity` = no cap. */
   maxMatchDistance: number;
 }
 
 export const DEFAULT_PROXIMITY_TRACKER_CONFIG: ProximityTrackerConfig = {
+  minHits: 3,
   lostSeconds: 5,
   maxMatchDistance: Infinity,
 };
 
 export interface ProximityUpdate {
-  /** All current tracks (active + still-within-hysteresis lost). */
+  /** Confirmed tracks (active + still-within-hysteresis lost). */
   tracks: SimpleTrack[];
-  /** Ids born this round. */
+  /** Ids that became confirmed this round. */
   added: number[];
-  /** Ids dropped this round (lost longer than `lostSeconds`). */
+  /** Confirmed ids dropped this round (lost longer than `lostSeconds`). */
   removed: number[];
 }
 
@@ -76,13 +74,19 @@ export class ProximityTracker {
     this.config.lostSeconds = Math.max(0, seconds);
   }
 
-  /** Number of faces currently held (active + lost within hysteresis). */
+  /** Confirmed faces held (active + lost within hysteresis). */
   get faceCount(): number {
-    return this.tracks.length;
+    return this.tracks.filter((t) => t.confirmed).length;
+  }
+
+  /** Tracks still awaiting confirmation (not yet streamed). */
+  get pendingCount(): number {
+    return this.tracks.filter((t) => !t.confirmed).length;
   }
 
   update(observations: FaceObservation[], nowMs: number): ProximityUpdate {
     const existing = this.tracks;
+    const confirmedBefore = new Set(existing.filter((t) => t.confirmed).map((t) => t.id));
     const trackUsed = new Array<boolean>(existing.length).fill(false);
     const obsUsed = new Array<boolean>(observations.length).fill(false);
 
@@ -102,19 +106,13 @@ export class ProximityTracker {
       this.applyMatch(existing[pair.ti], observations[pair.oi]);
     }
 
-    const added: number[] = [];
-    const removed: number[] = [];
-
-    // Leftover detections → new tracks.
+    // Leftover detections → new pending tracks.
     const born: SimpleTrack[] = [];
     for (let oi = 0; oi < observations.length; oi += 1) {
-      if (obsUsed[oi]) continue;
-      const track = this.birth(observations[oi]);
-      born.push(track);
-      added.push(track.id);
+      if (!obsUsed[oi]) born.push(this.birth(observations[oi]));
     }
 
-    // Leftover tracks → lost (kept for hysteresis) or dropped when expired.
+    // Leftover tracks: confirmed → lost hysteresis; unconfirmed → dropped.
     const survivors: SimpleTrack[] = [];
     const lostLimitMs = this.config.lostSeconds * 1000;
     for (let ti = 0; ti < existing.length; ti += 1) {
@@ -123,33 +121,46 @@ export class ProximityTracker {
         survivors.push(track);
         continue;
       }
+      if (!track.confirmed) continue; // drop unconfirmed on a miss (resets the streak)
       if (track.status !== 'lost') {
         track.status = 'lost';
         track.lostSinceMs = nowMs;
       }
-      if (nowMs - (track.lostSinceMs ?? nowMs) <= lostLimitMs) {
-        survivors.push(track);
-      } else {
-        removed.push(track.id);
-      }
+      if (nowMs - (track.lostSinceMs ?? nowMs) <= lostLimitMs) survivors.push(track);
     }
 
     this.tracks = [...survivors, ...born];
-    return { tracks: this.tracks, added, removed };
+
+    const confirmedNow = this.tracks.filter((t) => t.confirmed);
+    const activeIds = new Set(confirmedNow.map((t) => t.id));
+    const added = confirmedNow.filter((t) => !confirmedBefore.has(t.id)).map((t) => t.id);
+    const removed = [...confirmedBefore].filter((id) => !activeIds.has(id));
+    return { tracks: confirmedNow, added, removed };
   }
 
   private applyMatch(track: SimpleTrack, obs: FaceObservation): void {
     track.cx = obs.cx;
     track.cy = obs.cy;
     track.size = obs.size;
+    track.hits += 1;
     track.status = 'active';
     track.lostSinceMs = null;
+    if (!track.confirmed && track.hits >= this.config.minHits) track.confirmed = true;
   }
 
   private birth(obs: FaceObservation): SimpleTrack {
     const id = this.nextId;
     this.nextId += 1;
-    return { id, cx: obs.cx, cy: obs.cy, size: obs.size, status: 'active', lostSinceMs: null };
+    return {
+      id,
+      cx: obs.cx,
+      cy: obs.cy,
+      size: obs.size,
+      hits: 1,
+      confirmed: this.config.minHits <= 1,
+      status: 'active',
+      lostSinceMs: null,
+    };
   }
 }
 
