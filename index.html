@@ -30,7 +30,15 @@
       .source-pane { display: flex; flex-direction: column; gap: 0.35rem; }
       .source-pane video { width: 480px; max-width: 90vw; border-radius: 10px; background: #0003; }
       .caption { font-size: 0.8rem; opacity: 0.7; }
-      #grid { display: grid; grid-template-columns: repeat(auto-fill, 300px); gap: 1rem; align-content: start; }
+      #grid {
+        display: grid;
+        grid-auto-flow: column;
+        grid-template-rows: repeat(3, auto);
+        grid-auto-columns: 300px;
+        gap: 1rem;
+        align-content: start;
+        overflow-x: auto;
+      }
       .tile {
         position: relative; width: 300px; height: 200px; border-radius: 10px;
         overflow: hidden; background: #0006; box-shadow: 0 1px 6px #0004;

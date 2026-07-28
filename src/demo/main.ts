@@ -74,7 +74,12 @@ async function ensureModelLoaded(): Promise<void> {
   } else {
     throw new Error('Choose a .onnx file or paste a model URL.');
   }
-  session = await ort.InferenceSession.create(buffer, { executionProviders: ['wasm'] });
+  // Prefer WebGPU: much faster than WASM and runs off the CPU main thread, so
+  // the render loop keeps drawing → the tiles show LIVE video, not a frozen
+  // frame. Falls back to WASM where WebGPU isn't available.
+  session = await ort.InferenceSession.create(buffer, {
+    executionProviders: ['webgpu', 'wasm'],
+  });
   const inputName = session.inputNames[0];
   const outputName = session.outputNames[0];
 
