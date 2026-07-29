@@ -13,9 +13,10 @@
 > on `main`.
 >
 > **Demo:** `npm run dev` → choose a YOLOv8-head `.onnx` (**file** or **URL**)
-> → **Load model** → **Start webcam** / **Load video** → adjust the
-> detection-period and **extracted-box-size** sliders (the latter sets how
-> much of the source frame each stream covers around the head, ×head size). Bring your own YOLOv8-head model — any standard
+> → **Load model** → **Start webcam** / **Load video**. Live sliders:
+> detection **period**, **extracted-box size** (×head, how much of the source
+> frame each stream covers), and **score threshold** (default 10%, drops
+> low-confidence detections). Each tile shows its head's detection score. Bring your own YOLOv8-head model — any standard
 > Ultralytics detection export (input `[1,3,640,640]`, output `[1,4+nc,8400]`)
 > works; the decoder auto-handles the class count and tensor orientation.
 > Key files: [`yolov8HeadDetector.ts`](src/core/simple/yolov8HeadDetector.ts),

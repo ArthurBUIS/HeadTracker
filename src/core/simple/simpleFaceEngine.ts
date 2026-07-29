@@ -83,11 +83,20 @@ export interface SimpleFaceDiagnostics {
   groups: number;
 }
 
+/** Per-output-stream scores, reported each detection round. */
+export interface StreamScore {
+  id: number;
+  /** Detector confidence of each member head, in [0, 1]. */
+  scores: number[];
+  lost: boolean;
+}
+
 export interface SimpleFaceCallbacks {
   onFaceStreamAdded?: (face: FaceStream) => void;
   onFaceStreamLost?: (id: number) => void;
   onFaceStreamResumed?: (id: number) => void;
   onFaceStreamRemoved?: (id: number) => void;
+  onStreamScores?: (streams: StreamScore[]) => void;
   onDiagnostics?: (d: SimpleFaceDiagnostics) => void;
 }
 
@@ -232,6 +241,15 @@ export class SimpleFaceEngine {
       const inputById = new Map(inputs.map((i) => [i.id, i]));
       const groups = this.groupManager.update(inputs);
       this.reconcileGroupSlots(groups, inputById, lostById);
+
+      const scoreById = new Map(tracks.map((t) => [t.id, t.score]));
+      this.callbacks.onStreamScores?.(
+        groups.map((g) => ({
+          id: g.groupId,
+          scores: g.memberIds.map((id) => scoreById.get(id) ?? 0),
+          lost: g.memberIds.every((id) => lostById.get(id) === true),
+        })),
+      );
 
       this.roundCounter += 1;
       this.callbacks.onDiagnostics?.({

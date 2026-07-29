@@ -82,6 +82,14 @@
         </label>
         <span class="caption">how much of the source frame each stream covers around the head</span>
       </div>
+      <div class="row">
+        <strong>Score threshold:</strong>
+        <label class="interval-control">
+          <input id="scoreThreshold" type="range" min="0" max="100" step="1" value="10" />
+          <span id="scoreThresholdLabel">10%</span>
+        </label>
+        <span class="caption">detections below this confidence are ignored</span>
+      </div>
       <span id="status">Choose a YOLOv8-head .onnx (file or URL), then “Load model”.</span>
       <div id="debug">(waiting for detection…)</div>
     </header>

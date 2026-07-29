@@ -39,6 +39,8 @@ const modelFileInput = document.getElementById('modelFile') as HTMLInputElement;
 const modelUrlInput = document.getElementById('modelUrl') as HTMLInputElement;
 const cropSizeInput = document.getElementById('cropSize') as HTMLInputElement;
 const cropSizeLabel = document.getElementById('cropSizeLabel') as HTMLElement;
+const scoreThresholdInput = document.getElementById('scoreThreshold') as HTMLInputElement;
+const scoreThresholdLabel = document.getElementById('scoreThresholdLabel') as HTMLElement;
 
 const tileById = new Map<number, HTMLElement>();
 
@@ -48,6 +50,7 @@ let headDetector: Yolov8HeadDetector | null = null;
 let currentObjectUrl: string | null = null;
 let detectionIntervalMs = Number(intervalInput.value);
 let cropPadding = Number(cropSizeInput.value);
+let confThreshold = Number(scoreThresholdInput.value) / 100;
 
 function setStatus(text: string): void {
   statusEl.textContent = text;
@@ -97,7 +100,7 @@ async function ensureModelLoaded(): Promise<void> {
       return { data: o.data as Float32Array, dims: [...o.dims] };
     },
   };
-  headDetector = new Yolov8HeadDetector(runner);
+  headDetector = new Yolov8HeadDetector(runner, { confThreshold });
 }
 
 function addTile(id: number, stream: MediaStream): void {
@@ -117,11 +120,14 @@ function addTile(id: number, stream: MediaStream): void {
   tileById.set(id, tile);
 }
 function setTileLost(id: number, lost: boolean): void {
-  const tile = tileById.get(id);
-  if (!tile) return;
-  tile.classList.toggle('lost', lost);
-  const label = tile.querySelector('.tile-label');
-  if (label) label.textContent = lost ? `stream #${id} (lost)` : `stream #${id}`;
+  tileById.get(id)?.classList.toggle('lost', lost);
+}
+/** Set a tile's label with the score(s) of its member head(s). */
+function setTileScore(id: number, scores: number[], lost: boolean): void {
+  const label = tileById.get(id)?.querySelector('.tile-label');
+  if (!label) return;
+  const pct = scores.map((s) => `${Math.round(s * 100)}%`).join(', ');
+  label.textContent = `stream #${id} · ${pct}${lost ? ' (lost)' : ''}`;
 }
 function removeTile(id: number): void {
   tileById.get(id)?.remove();
@@ -152,6 +158,9 @@ function startEngineOnSource(): void {
     onFaceStreamLost: (id) => setTileLost(id, true),
     onFaceStreamResumed: (id) => setTileLost(id, false),
     onFaceStreamRemoved: (id) => removeTile(id),
+    onStreamScores: (streams) => {
+      for (const s of streams) setTileScore(s.id, s.scores, s.lost);
+    },
     onDiagnostics: (d) => {
       debugEl.textContent =
         `round ${d.round} · detected ${d.detected} · confirmed ${d.faceCount} ` +
@@ -228,6 +237,13 @@ cropSizeInput.addEventListener('input', () => {
   cropPadding = Number(cropSizeInput.value);
   cropSizeLabel.textContent = `${cropPadding.toFixed(1)}× head`;
   engine?.setCropPadding(cropPadding);
+});
+
+scoreThresholdLabel.textContent = `${scoreThresholdInput.value}%`;
+scoreThresholdInput.addEventListener('input', () => {
+  confThreshold = Number(scoreThresholdInput.value) / 100;
+  scoreThresholdLabel.textContent = `${scoreThresholdInput.value}%`;
+  headDetector?.setConfThreshold(confThreshold);
 });
 
 loadModelButton.addEventListener('click', () => {

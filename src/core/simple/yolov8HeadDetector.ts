@@ -36,7 +36,7 @@ export interface Yolov8HeadDetectorConfig {
 }
 
 export const DEFAULT_YOLOV8_HEAD_DETECTOR_CONFIG: Yolov8HeadDetectorConfig = {
-  confThreshold: 0.35,
+  confThreshold: 0.1,
   iouThreshold: 0.45,
 };
 
@@ -52,6 +52,15 @@ export class Yolov8HeadDetector implements FaceCenterDetector {
     config: Partial<Yolov8HeadDetectorConfig> = {},
   ) {
     this.config = { ...DEFAULT_YOLOV8_HEAD_DETECTOR_CONFIG, ...config };
+  }
+
+  /** Set the minimum detection confidence [0, 1] (live). */
+  setConfThreshold(threshold: number): void {
+    this.config.confThreshold = Math.min(1, Math.max(0, threshold));
+  }
+
+  getConfThreshold(): number {
+    return this.config.confThreshold;
   }
 
   async detectFaces(source: FrameSource): Promise<FaceObservation[]> {
@@ -89,7 +98,7 @@ export class Yolov8HeadDetector implements FaceCenterDetector {
     const kept = nonMaxSuppression(decoded, this.config.iouThreshold);
     return kept.map((det) => {
       const s = mapDetectionToSource(det, lb);
-      return { cx: s.cx, cy: s.cy, size: Math.max(s.w, s.h) };
+      return { cx: s.cx, cy: s.cy, size: Math.max(s.w, s.h), score: det.score };
     });
   }
 }

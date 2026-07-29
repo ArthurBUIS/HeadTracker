@@ -20,6 +20,8 @@ export interface FaceObservation {
   cy: number;
   /** Representative head size in source px (e.g. box height). */
   size: number;
+  /** Detector confidence in [0, 1]. */
+  score: number;
 }
 
 export interface SimpleTrack {
@@ -27,6 +29,8 @@ export interface SimpleTrack {
   cx: number;
   cy: number;
   size: number;
+  /** Latest matched detection's confidence in [0, 1]. */
+  score: number;
   /** Consecutive matched rounds (resets by drop-on-miss while unconfirmed). */
   hits: number;
   /** True once `hits >= minHits`; only confirmed tracks are streamed. */
@@ -142,6 +146,7 @@ export class ProximityTracker {
     track.cx = obs.cx;
     track.cy = obs.cy;
     track.size = obs.size;
+    track.score = obs.score;
     track.hits += 1;
     track.status = 'active';
     track.lostSinceMs = null;
@@ -156,6 +161,7 @@ export class ProximityTracker {
       cx: obs.cx,
       cy: obs.cy,
       size: obs.size,
+      score: obs.score,
       hits: 1,
       confirmed: this.config.minHits <= 1,
       status: 'active',

@@ -30,6 +30,7 @@ export {
   type FaceStream,
   type SimpleFaceCallbacks,
   type SimpleFaceDiagnostics,
+  type StreamScore,
 } from './simpleFaceEngine';
 
 export {
