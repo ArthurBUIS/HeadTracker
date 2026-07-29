@@ -196,6 +196,15 @@ export class SimpleFaceEngine {
     return this.config.cropPadding;
   }
 
+  /**
+   * Set the inner merge-zone width X (in ninths, [5, 16]): two streams merge
+   * when one centre enters the other's inner X:9 core, and split when it leaves
+   * the full 16:9 box. Live — takes effect on the next detection round.
+   */
+  setMergeWidthUnits(units: number): void {
+    this.groupManager.setMergeWidthUnits(units);
+  }
+
   private get aspect(): number {
     return this.config.outputWidth / this.config.outputHeight;
   }

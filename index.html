@@ -87,6 +87,14 @@
         <span class="caption">how much of the source frame each stream covers around the head</span>
       </div>
       <div class="row">
+        <strong>Merge zone (X:9):</strong>
+        <label class="interval-control">
+          <input id="mergeWidth" type="range" min="5" max="16" step="1" value="9" />
+          <span id="mergeWidthLabel">9:9</span>
+        </label>
+        <span class="caption">streams merge when a head enters the inner X:9 core of another; split when it leaves the full 16:9 box</span>
+      </div>
+      <div class="row">
         <strong>Score threshold:</strong>
         <label class="interval-control">
           <input id="scoreThreshold" type="range" min="0" max="100" step="1" value="60" />

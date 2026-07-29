@@ -2,10 +2,12 @@
  * Hysteretic grouping of close head boxes — merges tracks into shared output
  * streams. Pure and DOM-free, so it's unit-testable.
  *
- * Two boxes MERGE when they're too close: the centre of one falls inside the
- * other's box. Once merged they stay merged (no flicker) until their centres
- * drift more than `unmergeDistance` px apart, when they split. The in-between
- * band is the hysteresis.
+ * Each box is a 16:9 rectangle. Two boxes MERGE when the centre of one falls
+ * inside the inner `X:9` core of the other's box — same height, but width
+ * narrowed to X/16 (X in [5, 16]). They stay merged until a centre leaves the
+ * other's FULL 16:9 box, when they split. Because the merge zone (inner X:9)
+ * sits inside the unmerge zone (full box), the gap between them is the
+ * hysteresis; X=16 collapses that gap to zero.
  *
  * The merge relation is per-pair; groups are the connected components of the
  * "merged" links. Each component becomes one output stream, keyed by the
@@ -22,12 +24,16 @@ export interface GroupInput {
 }
 
 export interface GroupManagerConfig {
-  /** Centre distance (px) beyond which a merged pair splits. */
-  unmergeDistance: number;
+  /**
+   * Width, in ninths, of the inner merge zone (an X:9 rectangle centred in the
+   * 16:9 box). Merge when a centre enters this zone; unmerge when it leaves the
+   * full box. Clamped to [5, 16]; 16 means the whole box (no hysteresis band).
+   */
+  mergeWidthUnits: number;
 }
 
 export const DEFAULT_GROUP_MANAGER_CONFIG: GroupManagerConfig = {
-  unmergeDistance: 200,
+  mergeWidthUnits: 9,
 };
 
 /** One output group: its stable id and the track ids it contains. */
@@ -46,8 +52,9 @@ export class BoxGroupManager {
     this.config = { ...DEFAULT_GROUP_MANAGER_CONFIG, ...config };
   }
 
-  setUnmergeDistance(px: number): void {
-    this.config.unmergeDistance = Math.max(0, px);
+  /** Set the inner merge-zone width in ninths (X in [5, 16]); live. */
+  setMergeWidthUnits(units: number): void {
+    this.config.mergeWidthUnits = Math.min(16, Math.max(5, units));
   }
 
   /** Recompute the merged links (with hysteresis) and return the groups. */
@@ -66,10 +73,15 @@ export class BoxGroupManager {
         const a = inputs[i];
         const b = inputs[j];
         const key = linkKey(a.id, b.id);
-        const dist = Math.hypot(a.cx - b.cx, a.cy - b.cy);
+        // Merge zone: inner X:9 core (width narrowed to X/16). Unmerge zone:
+        // the full 16:9 box (widthScale 1). The gap between them is hysteresis.
+        const mergeWidthScale = this.config.mergeWidthUnits / 16;
         if (this.links.has(key)) {
-          if (dist > this.config.unmergeDistance) this.links.delete(key);
-        } else if (centreInBox(a, b) || centreInBox(b, a)) {
+          if (!centreInBox(a, b, 1) && !centreInBox(b, a, 1)) this.links.delete(key);
+        } else if (
+          centreInBox(a, b, mergeWidthScale) ||
+          centreInBox(b, a, mergeWidthScale)
+        ) {
           this.links.add(key);
         }
       }
@@ -112,11 +124,15 @@ function linkKey(a: number, b: number): string {
   return a < b ? `${a}:${b}` : `${b}:${a}`;
 }
 
-/** Is `p`'s centre inside `box`'s box? */
-function centreInBox(p: GroupInput, box: GroupInput): boolean {
+/**
+ * Is `p`'s centre inside `box`, with its width scaled by `widthScale` (height
+ * unchanged)? widthScale 1 tests the full box; X/16 tests the inner X:9 core.
+ */
+function centreInBox(p: GroupInput, box: GroupInput, widthScale: number): boolean {
+  const halfW = (box.boxW * widthScale) / 2;
   return (
-    p.cx >= box.cx - box.boxW / 2 &&
-    p.cx <= box.cx + box.boxW / 2 &&
+    p.cx >= box.cx - halfW &&
+    p.cx <= box.cx + halfW &&
     p.cy >= box.cy - box.boxH / 2 &&
     p.cy <= box.cy + box.boxH / 2
   );

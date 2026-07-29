@@ -40,6 +40,8 @@ const modelUrlInput = document.getElementById('modelUrl') as HTMLInputElement;
 const modelFormatSelect = document.getElementById('modelFormat') as HTMLSelectElement;
 const cropSizeInput = document.getElementById('cropSize') as HTMLInputElement;
 const cropSizeLabel = document.getElementById('cropSizeLabel') as HTMLElement;
+const mergeWidthInput = document.getElementById('mergeWidth') as HTMLInputElement;
+const mergeWidthLabel = document.getElementById('mergeWidthLabel') as HTMLElement;
 const scoreThresholdInput = document.getElementById('scoreThreshold') as HTMLInputElement;
 const scoreThresholdLabel = document.getElementById('scoreThresholdLabel') as HTMLElement;
 const videoSpeedInput = document.getElementById('videoSpeed') as HTMLInputElement;
@@ -53,6 +55,7 @@ let headDetector: Yolov8HeadDetector | null = null;
 let currentObjectUrl: string | null = null;
 let detectionIntervalMs = Number(intervalInput.value);
 let cropPadding = Number(cropSizeInput.value);
+let mergeWidthUnits = Number(mergeWidthInput.value);
 let confThreshold = Number(scoreThresholdInput.value) / 100;
 let videoSpeed = Number(videoSpeedInput.value);
 
@@ -178,6 +181,7 @@ function startEngineOnSource(): void {
   engine = new SimpleFaceEngine(headDetector, callbacks, {
     detectionIntervalMs,
     cropPadding,
+    grouping: { mergeWidthUnits },
   });
   engine.start(sourceVideo);
   (window as unknown as { simpleEngine: SimpleFaceEngine }).simpleEngine = engine;
@@ -246,6 +250,13 @@ cropSizeInput.addEventListener('input', () => {
   cropPadding = Number(cropSizeInput.value);
   cropSizeLabel.textContent = `${cropPadding.toFixed(1)}× head`;
   engine?.setCropPadding(cropPadding);
+});
+
+mergeWidthLabel.textContent = `${mergeWidthUnits}:9`;
+mergeWidthInput.addEventListener('input', () => {
+  mergeWidthUnits = Number(mergeWidthInput.value);
+  mergeWidthLabel.textContent = `${mergeWidthUnits}:9`;
+  engine?.setMergeWidthUnits(mergeWidthUnits);
 });
 
 scoreThresholdLabel.textContent = `${scoreThresholdInput.value}%`;
