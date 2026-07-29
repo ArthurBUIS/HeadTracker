@@ -57,10 +57,14 @@
     <header>
       <h1>HeadTracker — simple YOLOv8-head pipeline</h1>
       <div class="row">
-        <strong>YOLOv8 head model (ONNX):</strong>
+        <strong>Head model (ONNX):</strong>
+        <select id="modelFormat">
+          <option value="detect">YOLOv8 detection (auto classes)</option>
+          <option value="yoloe">YOLOE segmentation — 1-class “head”</option>
+        </select>
         <input id="modelFile" type="file" accept=".onnx" />
         <span>or URL</span>
-        <input id="modelUrl" type="text" placeholder="https://…/yolov8-head.onnx" size="34" />
+        <input id="modelUrl" type="text" placeholder="https://…/model.onnx" size="30" />
         <button id="loadModel">Load model</button>
       </div>
       <div class="row">

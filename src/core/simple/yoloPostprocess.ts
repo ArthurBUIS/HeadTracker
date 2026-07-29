@@ -57,28 +57,35 @@ export function mapDetectionToSource(det: Detection, lb: Letterbox): Detection {
 /**
  * Decode a YOLOv8 detection output tensor into detections (in input coords),
  * keeping only those with max-class-score ≥ `confThreshold`.
+ *
+ * `numClasses`: pass it explicitly for a SEGMENTATION export (e.g. YOLOE),
+ * whose channels are `[4 box, nc class, 32 mask]` — otherwise the 32 mask
+ * coefficients would be misread as classes. Omit it for a plain detection
+ * export and the class count is inferred as `channels - 4`.
  */
 export function decodeYolov8(
   data: Float32Array,
   dims: number[],
   confThreshold: number,
+  numClasses?: number,
 ): Detection[] {
   if (dims.length !== 3 || dims[0] !== 1) return [];
-  // [1, C, N] when C (=4+nc) is the smaller of the two — the usual export.
+  // [1, C, N] when C (=4+nc[+mask]) is the smaller of the two — the usual export.
   const channelsFirst = dims[1] <= dims[2];
   const channels = channelsFirst ? dims[1] : dims[2];
   const anchors = channelsFirst ? dims[2] : dims[1];
-  const numClasses = channels - 4;
-  if (numClasses < 1) return [];
+  const nc = numClasses ?? channels - 4;
+  if (nc < 1 || nc > channels - 4) return [];
 
   const value = channelsFirst
     ? (c: number, a: number) => data[c * anchors + a]
     : (c: number, a: number) => data[a * channels + c];
 
   const out: Detection[] = [];
+  const lastClass = 4 + nc; // read only the class channels, not any mask coeffs
   for (let a = 0; a < anchors; a += 1) {
     let best = 0;
-    for (let c = 4; c < channels; c += 1) {
+    for (let c = 4; c < lastClass; c += 1) {
       const s = value(c, a);
       if (s > best) best = s;
     }

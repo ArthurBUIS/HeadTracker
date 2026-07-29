@@ -33,6 +33,12 @@ export interface Yolov8HeadDetectorConfig {
   confThreshold: number;
   /** IoU threshold for non-maximum suppression. */
   iouThreshold: number;
+  /**
+   * Number of classes. Omit for a plain detection export (inferred as
+   * channels-4). Set to 1 for a YOLOE / segmentation export whose output has
+   * extra mask channels that must not be read as classes.
+   */
+  numClasses?: number;
 }
 
 export const DEFAULT_YOLOV8_HEAD_DETECTOR_CONFIG: Yolov8HeadDetectorConfig = {
@@ -61,6 +67,11 @@ export class Yolov8HeadDetector implements FaceCenterDetector {
 
   getConfThreshold(): number {
     return this.config.confThreshold;
+  }
+
+  /** Set the class count (1 for a YOLOE/seg export), or undefined to infer. */
+  setNumClasses(numClasses: number | undefined): void {
+    this.config.numClasses = numClasses;
   }
 
   async detectFaces(source: FrameSource): Promise<FaceObservation[]> {
@@ -94,7 +105,7 @@ export class Yolov8HeadDetector implements FaceCenterDetector {
     }
 
     const { data, dims } = await this.runner.run(input);
-    const decoded = decodeYolov8(data, dims, this.config.confThreshold);
+    const decoded = decodeYolov8(data, dims, this.config.confThreshold, this.config.numClasses);
     const kept = nonMaxSuppression(decoded, this.config.iouThreshold);
     return kept.map((det) => {
       const s = mapDetectionToSource(det, lb);

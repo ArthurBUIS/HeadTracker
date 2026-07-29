@@ -37,6 +37,7 @@ const intervalLabel = document.getElementById('intervalLabel') as HTMLElement;
 const loadModelButton = document.getElementById('loadModel') as HTMLButtonElement;
 const modelFileInput = document.getElementById('modelFile') as HTMLInputElement;
 const modelUrlInput = document.getElementById('modelUrl') as HTMLInputElement;
+const modelFormatSelect = document.getElementById('modelFormat') as HTMLSelectElement;
 const cropSizeInput = document.getElementById('cropSize') as HTMLInputElement;
 const cropSizeLabel = document.getElementById('cropSizeLabel') as HTMLElement;
 const scoreThresholdInput = document.getElementById('scoreThreshold') as HTMLInputElement;
@@ -103,7 +104,10 @@ async function ensureModelLoaded(): Promise<void> {
       return { data: o.data as Float32Array, dims: [...o.dims] };
     },
   };
-  headDetector = new Yolov8HeadDetector(runner, { confThreshold });
+  // YOLOE / segmentation exports carry mask channels — read only the single
+  // "head" class; plain detection exports infer their class count.
+  const numClasses = modelFormatSelect.value === 'yoloe' ? 1 : undefined;
+  headDetector = new Yolov8HeadDetector(runner, { confThreshold, numClasses });
 }
 
 function addTile(id: number, stream: MediaStream): void {
@@ -256,6 +260,11 @@ videoSpeedInput.addEventListener('input', () => {
   videoSpeed = Number(videoSpeedInput.value);
   videoSpeedLabel.textContent = `×${videoSpeed.toFixed(1)}`;
   sourceVideo.playbackRate = videoSpeed;
+});
+
+modelFormatSelect.addEventListener('change', () => {
+  // Live-apply to an already-loaded model (same weights, different decode).
+  headDetector?.setNumClasses(modelFormatSelect.value === 'yoloe' ? 1 : undefined);
 });
 
 loadModelButton.addEventListener('click', () => {
