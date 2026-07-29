@@ -1,225 +1,149 @@
 # HeadTracker
 
-> **Branch `simple-face-pipeline`.** This branch runs an alternate,
-> **embedding-free** pipeline (`src/core/simple`): a **YOLOv8 head detector**
-> (ONNX, via onnxruntime-web / WebGPU) runs periodically, a **nearest-distance
-> proximity tracker** matches head centres across runs. A new head must be
-> detected **3 rounds in a row** before it's streamed (false-positive guard);
-> a lost head keeps its stream for **5 s** (hysteresis). Heads that are **too
-> close merge** into one **320×180 (16:9)** stream — the centre of one box
-> inside the other merges them, and they only split again once their centres
-> are **> 200 px** apart (hysteresis, no flicker). No re-ID models. The full
-> identity pipeline (embeddings, segmentation, etc.) documented below lives
-> on `main`.
->
-> **Demo:** `npm run dev` → choose a YOLOv8-head `.onnx` (**file** or **URL**)
-> → **Load model** → **Start webcam** / **Load video**. Live sliders:
-> detection **period**, **extracted-box size** (×head, how much of the source
-> frame each stream covers), and **score threshold** (default 10%, drops
-> low-confidence detections). Each tile shows its head's detection score. Bring your own YOLOv8-head model — any standard
-> Ultralytics detection export (input `[1,3,640,640]`, output `[1,4+nc,8400]`)
-> works; the decoder auto-handles the class count and tensor orientation.
-> Key files: [`yolov8HeadDetector.ts`](src/core/simple/yolov8HeadDetector.ts),
-> [`yoloPostprocess.ts`](src/core/simple/yoloPostprocess.ts),
-> [`proximityTracker.ts`](src/core/simple/proximityTracker.ts),
-> [`simpleFaceEngine.ts`](src/core/simple/simpleFaceEngine.ts).
+**One camera in, many head-locked streams out.** HeadTracker takes a single
+video (your webcam or a video file) and produces **N live 16:9 streams — one
+per person's head** — each following its own head around the frame, with a
+stable identity (a box keeps tracking the same head, and gets its own number).
 
-Prototype: take **one** live video stream and emit **N** live streams — one
-per participant in the room — where each output is a **200×200 square that
-stays centred on that participant's head**, recomputed every 2 seconds with
-smoothed motion and a **stable identity** (each box keeps following its own
-person).
+It runs entirely in the browser. Nothing is uploaded — the video, the model,
+and all processing stay on your machine.
 
-Built to drop into
-[`portals-projector-agent`](../portals-projector-agent) later: it's
-TypeScript, runs in the Electron renderer / browser, consumes an
-`HTMLVideoElement` (i.e. a WebRTC `MediaStream`), and produces `MediaStream`s
-— the same currency Daily.co uses. It reuses the vision stack portals
-already ships (`@vladmandic/face-api` SsdMobilenetv1 on tfjs).
+This branch (`simple-face-pipeline`) is the **demo deliverable**. It uses a
+lightweight, privacy-friendly pipeline: a **YOLO head detector** runs a few
+times per second, and a **proximity tracker** keeps each head's stream stable
+between runs. (A heavier, identity-focused pipeline with face/body re-ID lives
+on the `main` branch — see [progress.md](progress.md).)
 
-## How it works
+---
 
-Four stages, two clocks:
+## Quick start
 
-| Stage | Runs | What it does |
-|-------|------|--------------|
-| **Detect** | every **0.2–2 s** (adjustable) | BodyPix **instance segmentation** gives a per-person **mask** + pose. The head comes from the keypoints (face, or shoulders when facing away); the mask lets the body embedding use only that person's pixels — **clean through occlusions**. |
-| **Track** | each detection | (1) greedy IoU **+ centre-distance** on the body box, (2) **appearance rescue**, (3) **gallery re-ID** → a stable integer id per participant, with birth (`minHits`) / death (interval-scaled `maxMisses`). **This is the "which box is which" part.** |
-| **Smooth + crop** | every render frame (~30 fps) | per-id EMA glides the 200×200 crop toward the head. Position and zoom smooth on **separate** time constants — position snappy, zoom (`sizeSeconds`, long) near-constant so the framing doesn't pulse with head-size noise. |
-| **Output** | continuous | one `canvas.captureStream()` per id. |
-
-The smoothing is the continuous-lowpass EMA from VideoStitcher's
-`stitcher/person_tracking.py` (`alpha = 1 - exp(-dt/τ)`), generalised to the
-measured frame delta. VideoStitcher only ever tracks **one** "closest"
-person and has no identity; the tracker here is the new piece.
-
-### Appearance re-identification
-
-Spatial tracking alone can't recover an id once a person is lost — they come
-back as a new number (the "one person → 8 heads" bug). So each track also
-carries appearance cues:
-
-- **Torso colour histogram** (`appearance.ts`) — an HSV histogram of the
-  clothing. Cheap, any-angle; the always-on fallback.
-- **Whole-body embedding** (`bodyEmbedding.ts`) — a CNN feature vector of the
-  body crop (MobileNet deep features by default), compared by cosine
-  similarity. Works from **any angle** (including facing away) and separates
-  look-alikes far better than colour, because it encodes texture/pattern/shape
-  — the **any-angle backbone**. Toggle with **Body re-ID** (on by default).
-- **Face embedding** (`faceEmbedding.ts`) — a 128-D descriptor from face-api's
-  FaceNet-style FaceRecognitionNet, the *most* discriminative cue, but only
-  when a face is visible. A precise **booster**. Toggle with **Face re-ID**
-  (opt-in; heavier).
-
-The tracker uses the strongest cue a track and detection share, in priority
-**face → body → colour** (`reidSimilarity`), each with its own weight
-(`faceWeight` 0.85, `bodyWeight` 0.75, `appearanceWeight` 0.6).
-
-> The default body embedder is MobileNet **deep features** — a solid,
-> self-contained baseline. A purpose-trained re-ID model (OSNet) would be more
-> discriminative and drops into the same injected `BodyEmbedder` interface.
-
-Association runs in three phases (`tracker.ts`): (1) **primary** — one
-**optimal (Hungarian) assignment** over a cost that **fuses** spatial
-overlap/proximity with clothing similarity, gated to plausible pairs;
-(2) **appearance rescue** — matches a track and detection phase 1 left
-unmatched beyond the spatial gate (a big jump out of an occlusion);
-(3) **gallery re-ID** — a detection matching a recently-*lost* track's
-signature **resurrects that id** instead of minting a new one, so someone who
-left and returned reclaims their number (lingers `reidMemorySeconds`, 30 s).
-
-Fusing appearance into phase 1 (rather than matching spatially first) is what
-stops two people **crossing** from swapping ids: within the gate, identity
-follows clothing, not whichever detection ended up nearest. Matches to a
-mutually-occluding detection also skip the appearance update, so a
-neighbour's clothing can't contaminate a signature mid-crossing. All verified
-headless, including the crossing swap (prevented with fusion, happens
-without), the contamination guard, and that differently-dressed people are
-never merged.
-
-### Losing and regaining a head
-
-When a head is lost, the stream is **not** cut — it's kept alive, frozen on
-the head's last position (an unmoving camera on that spot), and the tile is
-greyed out and labelled "(lost)". If the person comes back within
-`lostStreamLingerSeconds` (default 30 s) the same stream **resumes
-seamlessly** — no flicker, no new id — reusing the gallery re-ID above. Only
-after lingering that long with no return is the stream finally stopped.
-
-### Detection model
-
-The active detector is **BodyPix instance segmentation**
-(`@tensorflow-models/body-pix` on tfjs). Per person it yields a **mask** and
-a pose; the head comes from the keypoints (`poseHead.ts`: face keypoints, or
-shoulder geometry when facing away), the body box is the mask's bounding box,
-and the mask rides along on the detection. The engine then embeds **only the
-masked pixels**, so when one person walks in front of another the body
-embedding isn't contaminated by the occluder — the fix for a stream jumping
-to the wrong head. (`bodyPixDetector.ts`.)
-
-The `HeadDetector` interface is pluggable — other implementations live in the
-repo behind it: **MoveNet** pose (`moveNetDetector.ts`), **coco-ssd** body
-detection (`cocoSsdDetector.ts`), and **face-api** (`faceApiDetector.ts`).
-
-## Run the demo
+You need **[Node.js](https://nodejs.org) 18 or newer** and a **YOLO head model
+file** (`.onnx` — see [Get a model](#get-a-model) below).
 
 ```bash
 npm install
-npm run dev        # http://127.0.0.1:5180  → click “Start webcam”
+npm run dev
 ```
 
-Two source modes:
+Then open **http://127.0.0.1:5180** in your browser.
 
-- **Start webcam** — live camera.
-- **Load video file…** — pick any local video; it plays (looping) and is fed
-  to the algorithm *as if it were a live stream* (every frame is sampled at
-  real-time playback speed). Best way to test against pre-recorded footage.
+> Use `127.0.0.1`, **not** `localhost` — on some Windows setups the browser
+> resolves `localhost` to IPv6 and can't connect. `127.0.0.1` always works.
 
-The **Detection interval** slider (0.2–2 s) re-runs detection more or less
-often; it applies live to a running session. **Model setup is explicit**:
-pick **one detector** and **one re-ID method** by their exact model names,
-then click **Load models** — the status line then states precisely what's
-running. That locks the choice and enables the source buttons. To change,
-reload the page.
+**Browser:** use **Chrome or Edge** (recent version). They support WebGPU,
+which runs the model ~4× faster and keeps the video tiles smooth. It also
+works in other browsers via CPU, just slower.
 
-- **Detector**: `BodyPix — MobileNetV1` (segmentation, gives masks) or
-  `MoveNet — MultiPose Lightning` (pose).
-- **Re-ID**: `None`, `Colour histogram`, `Body embedding — MobileNet v2`, or
-  `Face embedding — face-api (SSD + ResNet, FaceNet-style)`. Exactly one runs,
-  so there's no ambiguity about which cue is active.
+---
 
-The left pane is the source; the grid on the right is one 200×200 tracked
-stream per detected head, each labelled with its stable id. Walk out of frame
-and back to watch ids persist and streams appear/disappear.
+## Get a model
 
-> **Open `http://127.0.0.1:5180`** (not `localhost`) if your browser resolves
-> `localhost` to IPv6 `::1` and can't connect — a common Windows quirk.
+HeadTracker doesn't ship a model — you load one yourself, so you can swap in a
+better one anytime. **Ask Arthur for a model file** (`.onnx`), or point the
+demo at a hosted model URL.
+
+Any standard **Ultralytics YOLOv8 head-detection export** works. Two you may be
+handed:
+
+| File | Size | Notes |
+|------|------|-------|
+| `nano.onnx`   | ~12 MB | Fast and light. Good default, works on any machine. |
+| `medium.onnx` | ~99 MB | More accurate, needs a bit more GPU. |
+
+There's also a **YOLOE** option (an open-vocabulary model exported with the
+prompt "head") — pick the matching format in the dropdown when you load it.
+
+The first time you load a model, the browser spends a few seconds compiling it
+(you'll see it "think"). After that it's fast.
+
+---
+
+## Using the demo
+
+1. **Choose the model format** in the dropdown:
+   - *YOLOv8 detection (auto classes)* — for `nano.onnx` / `medium.onnx`.
+   - *YOLOE segmentation — 1-class "head"* — for a YOLOE "head" export.
+2. **Pick the model** — either choose the `.onnx` **file**, or paste a model
+   **URL** — then click **Load model**.
+3. **Choose a source:**
+   - **Start webcam** — your live camera.
+   - **Load video file…** — pick any local video; it plays on a loop and is
+     fed to the algorithm as if it were live. Best way to test on real footage.
+
+The left pane shows the source. The grid on the right fills with one **320×180
+(16:9)** stream per tracked head, arranged in columns of three. Each tile is
+labelled with its head's number and current detection score (e.g.
+`stream #2 · 87%`).
+
+### The controls
+
+All sliders apply **live** — adjust them while it's running.
+
+| Control | What it does |
+|---|---|
+| **Detection period** (0.2–2 s) | How often the model looks for heads. Shorter = more responsive but heavier. 0.5 s is a good balance; with the `medium`/YOLOE models, stay at 0.5 s or higher. |
+| **Extracted box size** (×head) | How much of the frame each stream shows around the head. Larger = more zoomed-out / more context; smaller = tight on the face. |
+| **Merge zone (X:9)** | How close two heads must get before their streams **merge** into one (see below). Lower = they have to be very close; higher = they merge more easily. |
+| **Score threshold** (0–100%) | Detections below this confidence are ignored. Default 60%. Raise it if you get spurious boxes; lower it if real heads are being missed. |
+| **Video speed** (×0.1–×1) | Slows a loaded video down, handy for watching the tracking behave frame by frame. |
+
+### What you'll see happen
+
+- **A new head isn't streamed instantly.** It must be detected **3 times in a
+  row** first — this stops flickers and false positives from spawning junk
+  streams.
+- **Losing a head doesn't cut its stream.** If a head disappears (turns away,
+  walks out, a missed detection), its stream is **held for 5 seconds**, frozen
+  on the last spot and greyed out. If the head comes back within that window,
+  the same stream resumes — no new number. After 5 s with no return, the
+  stream closes.
+- **Close heads merge.** When two people get close enough that one head's
+  centre enters the **inner X:9 core** of the other's box, their two streams
+  **merge into one** that frames both. They **split apart again** only once a
+  centre leaves the other's full 16:9 box. The gap between "merge" and "split"
+  is deliberate — it stops streams flickering when people stand near each
+  other. The **Merge zone** slider sets how eager that merge is.
+
+---
+
+## Troubleshooting
+
+- **"Can't connect to the server."** Open `http://127.0.0.1:5180`, not
+  `localhost`. Make sure `npm run dev` is still running in the terminal.
+- **Webcam is black / no permission.** The browser must grant camera access on
+  `127.0.0.1` (a secure context). Allow it when prompted.
+- **Tiles freeze or it's slow.** Use Chrome or Edge (WebGPU). Try the `nano`
+  model, or a longer detection period.
+- **Too many / too few boxes.** Adjust the **Score threshold** — raise it to
+  cut false detections, lower it to catch missed heads.
+- **Streams merge or split too readily.** Tune the **Merge zone** slider (lower
+  X = harder to merge).
+
+---
+
+## For developers
+
+The reusable algorithm lives in [`src/core/simple`](src/core/simple) and
+depends only on DOM / canvas / MediaStream APIs — no Vite, React, or Electron
+— so it can be lifted into `portals-projector-agent` as-is. The onnxruntime
+model is **injected**, keeping the core runtime-agnostic.
+
+```
+src/core/simple/
+├── yolov8HeadDetector.ts   letterbox a frame → run YOLO → head centres + sizes
+├── yoloPostprocess.ts      pure decode / NMS / coordinate mapping (unit-tested)
+├── proximityTracker.ts     nearest-distance matching, 3-hit confirm, 5 s lost hold
+├── boxGrouping.ts          hysteretic merge/split of close heads (X:9 merge zone)
+├── simpleFaceEngine.ts     orchestrates the above → one MediaStream per group
+└── index.ts                public barrel
+```
+
+Every timing/threshold is configurable — see the `DEFAULT_*_CONFIG` objects and
+the per-stage config types. [progress.md](progress.md) has the full module map
+and the reasoning behind each stage.
 
 ```bash
-npm run typecheck  # tsc --noEmit, strict
+npm run typecheck   # tsc --noEmit, strict
+npm run build       # typecheck + production bundle
 ```
-
-## Using the core (the part that ships to portals)
-
-The algorithm lives in [`src/core`](src/core) and imports nothing
-Vite/React/Electron — only DOM + canvas + MediaStream APIs plus an injected
-face-api instance.
-
-```ts
-import { HeadTrackerEngine } from './core';
-
-// In portals: inject the shared esm-nobundle faceapi from
-// src/renderer/utils/faceApi.js instead of a bundled one.
-const engine = HeadTrackerEngine.withFaceApi(faceapi, {
-  onHeadStreamAdded: ({ id, stream }) => attachToTile(id, stream),
-  onHeadStreamRemoved: (id) => removeTile(id),
-});
-engine.start(videoElement);   // an HTMLVideoElement playing the source
-// …
-engine.stop();
-```
-
-Every timing/threshold is configurable (detection interval, output size,
-IoU threshold, confirm/drop counts, EMA time constants, crop padding) — see
-`DEFAULT_ENGINE_CONFIG` and the per-stage config types.
-
-## Repository layout
-
-See [progress.md](progress.md) for the dense module map. In short:
-
-```
-HeadTracker/
-├── index.html              demo harness page
-├── src/
-│   ├── core/               the reusable algorithm (portals-bound)
-│   │   ├── types.ts            shared value types + detector interface
-│   │   ├── smoothing.ts        time-constant EMA (from person_tracking.py)
-│   │   ├── tracker.ts          identity association (fused-cost + appearance + gallery)
-│   │   ├── assignment.ts       Hungarian optimal min-cost assignment
-│   │   ├── appearance.ts       torso colour-histogram descriptors for re-ID
-│   │   ├── bodyEmbedding.ts    whole-body embedding re-ID cue (cosine sim)
-│   │   ├── faceEmbedding.ts    128-D face-descriptor re-ID cue + face→head map
-│   │   ├── bodyPixDetector.ts  BodyPix segmentation → head + body box + mask (active)
-│   │   ├── poseHead.ts         shared head-from-keypoints geometry
-│   │   ├── moveNetDetector.ts  MoveNet pose → head boxes (kept for selector)
-│   │   ├── cocoSsdDetector.ts  coco-ssd body → head boxes (kept for selector)
-│   │   ├── faceApiDetector.ts  face-api faces → head boxes (kept for selector)
-│   │   ├── headCrop.ts         per-track smoothed 200×200 crop geometry
-│   │   ├── headTrackerEngine.ts orchestrator → N MediaStreams
-│   │   └── index.ts            public barrel
-│   └── demo/main.ts        webcam → engine → grid of tiles (not shipped)
-└── progress.md
-```
-
-## Known prototype limits
-
-- The default body embedder is **MobileNet ImageNet features**, not a
-  purpose-trained re-ID model — good, but it can still confuse very similar
-  people. Swapping in OSNet (via the same `BodyEmbedder`) is the upgrade.
-- Re-ID cues add cost: the body embedder runs one CNN forward **per person**
-  each round; face re-ID runs face-api's 3-model pipeline. Fine at room scale;
-  for many people or a fast interval, budget accordingly (or offload to a
-  Web Worker — a planned next step).
-- The facing-away head estimate is shoulder geometry (a fixed rise above the
-  shoulder line), so it's approximate for unusual postures — tune
-  `shoulderHeadScale` / `shoulderHeadRise` in `moveNetDetector.ts`.
