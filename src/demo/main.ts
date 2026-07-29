@@ -41,6 +41,8 @@ const cropSizeInput = document.getElementById('cropSize') as HTMLInputElement;
 const cropSizeLabel = document.getElementById('cropSizeLabel') as HTMLElement;
 const scoreThresholdInput = document.getElementById('scoreThreshold') as HTMLInputElement;
 const scoreThresholdLabel = document.getElementById('scoreThresholdLabel') as HTMLElement;
+const videoSpeedInput = document.getElementById('videoSpeed') as HTMLInputElement;
+const videoSpeedLabel = document.getElementById('videoSpeedLabel') as HTMLElement;
 
 const tileById = new Map<number, HTMLElement>();
 
@@ -51,6 +53,7 @@ let currentObjectUrl: string | null = null;
 let detectionIntervalMs = Number(intervalInput.value);
 let cropPadding = Number(cropSizeInput.value);
 let confThreshold = Number(scoreThresholdInput.value) / 100;
+let videoSpeed = Number(videoSpeedInput.value);
 
 function setStatus(text: string): void {
   statusEl.textContent = text;
@@ -189,6 +192,7 @@ async function startWebcam(): Promise<void> {
     sourceVideo.srcObject = stream;
     sourceVideo.loop = false;
     await sourceVideo.play();
+    sourceVideo.playbackRate = videoSpeed;
     captionEl.textContent = 'Source stream (webcam)';
     startEngineOnSource();
     setStatus('Running on webcam.');
@@ -214,6 +218,7 @@ async function loadVideoFile(file: File): Promise<void> {
       sourceVideo.onerror = () => reject(new Error('Could not decode this video file.'));
     });
     await sourceVideo.play();
+    sourceVideo.playbackRate = videoSpeed;
     captionEl.textContent = `Source: ${file.name} (looping)`;
     startEngineOnSource();
     setStatus(`Running on “${file.name}”.`);
@@ -244,6 +249,13 @@ scoreThresholdInput.addEventListener('input', () => {
   confThreshold = Number(scoreThresholdInput.value) / 100;
   scoreThresholdLabel.textContent = `${scoreThresholdInput.value}%`;
   headDetector?.setConfThreshold(confThreshold);
+});
+
+videoSpeedLabel.textContent = `×${videoSpeed.toFixed(1)}`;
+videoSpeedInput.addEventListener('input', () => {
+  videoSpeed = Number(videoSpeedInput.value);
+  videoSpeedLabel.textContent = `×${videoSpeed.toFixed(1)}`;
+  sourceVideo.playbackRate = videoSpeed;
 });
 
 loadModelButton.addEventListener('click', () => {
