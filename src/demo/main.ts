@@ -50,6 +50,15 @@ const cropSizeInput = document.getElementById('cropSize') as HTMLInputElement;
 const cropSizeLabel = document.getElementById('cropSizeLabel') as HTMLElement;
 const mergeWidthInput = document.getElementById('mergeWidth') as HTMLInputElement;
 const mergeWidthLabel = document.getElementById('mergeWidthLabel') as HTMLElement;
+const mergeMethodRadios = Array.from(
+  document.querySelectorAll<HTMLInputElement>('input[name="mergeMethod"]'),
+);
+const proximityRow = document.getElementById('proximityRow') as HTMLElement;
+const overlapRow = document.getElementById('overlapRow') as HTMLElement;
+const mergeOverlapInput = document.getElementById('mergeOverlap') as HTMLInputElement;
+const mergeOverlapLabel = document.getElementById('mergeOverlapLabel') as HTMLElement;
+const unmergeOverlapInput = document.getElementById('unmergeOverlap') as HTMLInputElement;
+const unmergeOverlapLabel = document.getElementById('unmergeOverlapLabel') as HTMLElement;
 const scoreThresholdInput = document.getElementById('scoreThreshold') as HTMLInputElement;
 const scoreThresholdLabel = document.getElementById('scoreThresholdLabel') as HTMLElement;
 const lostRoundsInput = document.getElementById('lostRounds') as HTMLInputElement;
@@ -69,6 +78,10 @@ let currentObjectUrl: string | null = null;
 let detectionIntervalMs = Number(intervalInput.value);
 let cropPadding = Number(cropSizeInput.value);
 let mergeWidthUnits = Number(mergeWidthInput.value);
+let mergeMethod: 'proximity' | 'overlap' =
+  (mergeMethodRadios.find((r) => r.checked)?.value as 'proximity' | 'overlap') ?? 'proximity';
+let mergeOverlapPct = Number(mergeOverlapInput.value);
+let unmergeOverlapPct = Number(unmergeOverlapInput.value);
 let confThreshold = Number(scoreThresholdInput.value) / 100;
 let lostRounds = Number(lostRoundsInput.value);
 let disengageRounds = Number(disengageRoundsInput.value);
@@ -228,7 +241,7 @@ function startEngineOnSource(): void {
   engine = new SimpleFaceEngine(headDetector, callbacks, {
     detectionIntervalMs,
     cropPadding,
-    grouping: { mergeWidthUnits },
+    grouping: { mergeMethod, mergeWidthUnits, mergeOverlapPct, unmergeOverlapPct },
     tracker: { lostRounds, disengageRounds },
   });
   engine.start(sourceVideo);
@@ -312,6 +325,39 @@ mergeWidthInput.addEventListener('input', () => {
   mergeWidthUnits = Number(mergeWidthInput.value);
   mergeWidthLabel.textContent = `${mergeWidthUnits}:9`;
   engine?.setMergeWidthUnits(mergeWidthUnits);
+});
+
+/** Dim/disable the controls for whichever merge method isn't active. */
+function updateMergeMethodUI(): void {
+  const overlap = mergeMethod === 'overlap';
+  proximityRow.classList.toggle('dim', overlap);
+  overlapRow.classList.toggle('dim', !overlap);
+  mergeWidthInput.disabled = overlap;
+  mergeOverlapInput.disabled = !overlap;
+  unmergeOverlapInput.disabled = !overlap;
+}
+updateMergeMethodUI();
+for (const radio of mergeMethodRadios) {
+  radio.addEventListener('change', () => {
+    if (!radio.checked) return;
+    mergeMethod = radio.value as 'proximity' | 'overlap';
+    updateMergeMethodUI();
+    engine?.setMergeMethod(mergeMethod);
+  });
+}
+
+mergeOverlapLabel.textContent = `${mergeOverlapPct}%`;
+mergeOverlapInput.addEventListener('input', () => {
+  mergeOverlapPct = Number(mergeOverlapInput.value);
+  mergeOverlapLabel.textContent = `${mergeOverlapPct}%`;
+  engine?.setMergeOverlapPct(mergeOverlapPct);
+});
+
+unmergeOverlapLabel.textContent = `${unmergeOverlapPct}%`;
+unmergeOverlapInput.addEventListener('input', () => {
+  unmergeOverlapPct = Number(unmergeOverlapInput.value);
+  unmergeOverlapLabel.textContent = `${unmergeOverlapPct}%`;
+  engine?.setUnmergeOverlapPct(unmergeOverlapPct);
 });
 
 scoreThresholdLabel.textContent = `${scoreThresholdInput.value}%`;

@@ -18,6 +18,7 @@ export {
   type GroupInput,
   type Group,
   type GroupManagerConfig,
+  type MergeMethod,
 } from './boxGrouping';
 
 export {

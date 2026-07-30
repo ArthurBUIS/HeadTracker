@@ -20,6 +20,7 @@ import {
   BoxGroupManager,
   type GroupInput,
   type GroupManagerConfig,
+  type MergeMethod,
 } from './boxGrouping';
 import {
   ProximityTracker,
@@ -211,6 +212,21 @@ export class SimpleFaceEngine {
    */
   setMergeWidthUnits(units: number): void {
     this.groupManager.setMergeWidthUnits(units);
+  }
+
+  /** Choose the merge rule: 'proximity' (X:9 core) or 'overlap' (% area). Live. */
+  setMergeMethod(method: MergeMethod): void {
+    this.groupManager.setMergeMethod(method);
+  }
+
+  /** ('overlap') Merge when boxes overlap ≥ this % of the smaller box. Live. */
+  setMergeOverlapPct(pct: number): void {
+    this.groupManager.setMergeOverlapPct(pct);
+  }
+
+  /** ('overlap') Split when overlap drops below this % of the smaller box. Live. */
+  setUnmergeOverlapPct(pct: number): void {
+    this.groupManager.setUnmergeOverlapPct(pct);
   }
 
   /** Successive missed detections a lost stream survives before dropping. */

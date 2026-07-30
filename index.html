@@ -21,6 +21,7 @@
       button:disabled { opacity: 0.5; cursor: default; }
       .interval-control { display: inline-flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; }
       .interval-control input[type='range'] { width: 200px; }
+      .row.dim { opacity: 0.4; }
       #intervalLabel { min-width: 3ch; font-variant-numeric: tabular-nums; }
       #debug {
         font-family: ui-monospace, monospace; font-size: 0.9rem;
@@ -90,12 +91,35 @@
         <span class="caption">how much of the source frame each stream covers around the head</span>
       </div>
       <div class="row">
+        <strong>Merge method:</strong>
+        <label class="interval-control">
+          <input type="radio" name="mergeMethod" value="proximity" checked /> head proximity
+        </label>
+        <label class="interval-control">
+          <input type="radio" name="mergeMethod" value="overlap" /> box overlap
+        </label>
+      </div>
+      <div class="row" id="proximityRow">
         <strong>Merge zone (X:9):</strong>
         <label class="interval-control">
           <input id="mergeWidth" type="range" min="5" max="16" step="1" value="9" />
           <span id="mergeWidthLabel">9:9</span>
         </label>
         <span class="caption">streams merge when a head enters the inner X:9 core of another; split when it leaves the full 16:9 box</span>
+      </div>
+      <div class="row" id="overlapRow">
+        <strong>Box overlap:</strong>
+        <label class="interval-control">
+          merge ≥
+          <input id="mergeOverlap" type="range" min="0" max="100" step="1" value="50" />
+          <span id="mergeOverlapLabel">50%</span>
+        </label>
+        <label class="interval-control">
+          split &lt;
+          <input id="unmergeOverlap" type="range" min="0" max="100" step="1" value="20" />
+          <span id="unmergeOverlapLabel">20%</span>
+        </label>
+        <span class="caption">% of the smaller box that must overlap to merge / stay merged (keep merge ≥ split)</span>
       </div>
       <div class="row">
         <strong>Lost duration:</strong>
