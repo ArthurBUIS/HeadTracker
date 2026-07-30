@@ -47,10 +47,10 @@ export interface GroupManagerConfig {
 }
 
 export const DEFAULT_GROUP_MANAGER_CONFIG: GroupManagerConfig = {
-  mergeMethod: 'proximity',
-  mergeWidthUnits: 9,
-  mergeOverlapPct: 50,
-  unmergeOverlapPct: 20,
+  mergeMethod: 'overlap',
+  mergeWidthUnits: 5,
+  mergeOverlapPct: 70,
+  unmergeOverlapPct: 50,
 };
 
 /** One output group: its stable id and the track ids it contains. */

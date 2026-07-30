@@ -55,7 +55,7 @@ export const DEFAULT_SIMPLE_ENGINE_CONFIG: SimpleFaceEngineConfig = {
   outputWidth: 320,
   outputHeight: 180,
   detectionIntervalMs: 500,
-  cropPadding: 2.6,
+  cropPadding: 2.0,
   smoothSeconds: 0.4,
   outputFps: 30,
   tracker: {},

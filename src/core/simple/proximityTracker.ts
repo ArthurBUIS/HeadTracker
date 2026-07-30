@@ -74,8 +74,8 @@ export interface ProximityTrackerConfig {
 
 export const DEFAULT_PROXIMITY_TRACKER_CONFIG: ProximityTrackerConfig = {
   minHits: 3,
-  lostRounds: 4,
-  disengageRounds: 10,
+  lostRounds: 3,
+  disengageRounds: 5,
   maxMatchDistance: Infinity,
 };
 

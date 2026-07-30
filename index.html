@@ -85,25 +85,25 @@
       <div class="row">
         <strong>Extracted box size:</strong>
         <label class="interval-control">
-          <input id="cropSize" type="range" min="1" max="6" step="0.1" value="2.6" />
-          <span id="cropSizeLabel">2.6× head</span>
+          <input id="cropSize" type="range" min="1" max="6" step="0.1" value="2.0" />
+          <span id="cropSizeLabel">2.0× head</span>
         </label>
         <span class="caption">how much of the source frame each stream covers around the head</span>
       </div>
       <div class="row">
         <strong>Merge method:</strong>
         <label class="interval-control">
-          <input type="radio" name="mergeMethod" value="proximity" checked /> head proximity
+          <input type="radio" name="mergeMethod" value="proximity" /> head proximity
         </label>
         <label class="interval-control">
-          <input type="radio" name="mergeMethod" value="overlap" /> box overlap
+          <input type="radio" name="mergeMethod" value="overlap" checked /> box overlap
         </label>
       </div>
       <div class="row" id="proximityRow">
         <strong>Merge zone (X:9):</strong>
         <label class="interval-control">
-          <input id="mergeWidth" type="range" min="5" max="16" step="1" value="9" />
-          <span id="mergeWidthLabel">9:9</span>
+          <input id="mergeWidth" type="range" min="5" max="16" step="1" value="5" />
+          <span id="mergeWidthLabel">5:9</span>
         </label>
         <span class="caption">streams merge when a head enters the inner X:9 core of another; split when it leaves the full 16:9 box</span>
       </div>
@@ -111,21 +111,21 @@
         <strong>Box overlap:</strong>
         <label class="interval-control">
           merge ≥
-          <input id="mergeOverlap" type="range" min="0" max="100" step="1" value="50" />
-          <span id="mergeOverlapLabel">50%</span>
+          <input id="mergeOverlap" type="range" min="0" max="100" step="1" value="70" />
+          <span id="mergeOverlapLabel">70%</span>
         </label>
         <label class="interval-control">
           split &lt;
-          <input id="unmergeOverlap" type="range" min="0" max="100" step="1" value="20" />
-          <span id="unmergeOverlapLabel">20%</span>
+          <input id="unmergeOverlap" type="range" min="0" max="100" step="1" value="50" />
+          <span id="unmergeOverlapLabel">50%</span>
         </label>
         <span class="caption">% of the smaller box that must overlap to merge / stay merged (keep merge ≥ split)</span>
       </div>
       <div class="row">
         <strong>Lost duration:</strong>
         <label class="interval-control">
-          <input id="lostRounds" type="range" min="1" max="10" step="1" value="4" />
-          <span id="lostRoundsLabel">4 detections</span>
+          <input id="lostRounds" type="range" min="1" max="10" step="1" value="3" />
+          <span id="lostRoundsLabel">3 detections</span>
         </label>
         <span class="caption">how many missed detections a lost stream is kept (greyed) before it drops</span>
       </div>
@@ -137,8 +137,8 @@
         </label>
         <label class="interval-control">
           after
-          <input id="disengageRounds" type="range" min="1" max="100" step="1" value="10" />
-          <span id="disengageRoundsLabel">10 faceless detections</span>
+          <input id="disengageRounds" type="range" min="1" max="100" step="1" value="5" />
+          <span id="disengageRoundsLabel">5 faceless detections</span>
         </label>
         <span class="caption">a detected head with no face for this many rounds is greyed as “disengaged” (loads a MobileNet face model)</span>
       </div>
@@ -153,8 +153,8 @@
       <div class="row">
         <strong>Video speed:</strong>
         <label class="interval-control">
-          <input id="videoSpeed" type="range" min="0.1" max="1" step="0.1" value="1" />
-          <span id="videoSpeedLabel">×1.0</span>
+          <input id="videoSpeed" type="range" min="0.1" max="1" step="0.1" value="0.5" />
+          <span id="videoSpeedLabel">×0.5</span>
         </label>
         <span class="caption">slow the source video down (applies to loaded files)</span>
       </div>
