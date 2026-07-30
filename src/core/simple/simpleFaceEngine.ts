@@ -26,6 +26,7 @@ import {
   type FaceObservation,
   type ProximityTrackerConfig,
 } from './proximityTracker';
+import { annotateFacePresence, type FacePresenceDetector } from './faceDetector';
 
 /** Detects heads in a frame, returning each head's centre + size. */
 export interface FaceCenterDetector {
@@ -77,6 +78,8 @@ export interface SimpleFaceDiagnostics {
   faceCount: number;
   /** Confirmed tracks currently lost. */
   lost: number;
+  /** Confirmed, still-detected tracks flagged disengaged (no face). */
+  disengaged: number;
   /** Tracks still awaiting confirmation. */
   pending: number;
   /** Output groups/streams after merging. */
@@ -89,6 +92,8 @@ export interface StreamScore {
   /** Detector confidence of each member head, in [0, 1]. */
   scores: number[];
   lost: boolean;
+  /** Every member is detected but shows no face (greyed like lost). */
+  disengaged: boolean;
 }
 
 export interface SimpleFaceCallbacks {
@@ -142,6 +147,9 @@ export class SimpleFaceEngine {
   private running = false;
 
   private roundCounter = 0;
+
+  /** Optional face-presence gate; when set, drives the "disengaged" status. */
+  private faceDetector: FacePresenceDetector | null = null;
 
   constructor(
     private readonly detector: FaceCenterDetector,
@@ -205,6 +213,25 @@ export class SimpleFaceEngine {
     this.groupManager.setMergeWidthUnits(units);
   }
 
+  /** Successive missed detections a lost stream survives before dropping. */
+  setLostRounds(rounds: number): void {
+    this.tracker.setLostRounds(rounds);
+  }
+
+  /** Successive faceless rounds before a still-detected head goes disengaged. */
+  setDisengageRounds(rounds: number): void {
+    this.tracker.setDisengageRounds(rounds);
+  }
+
+  /**
+   * Enable ("disengagement" detection) or disable the per-head face check by
+   * supplying/clearing a face detector. When cleared, heads are always treated
+   * as engaged. Live.
+   */
+  setFaceDetector(detector: FacePresenceDetector | null): void {
+    this.faceDetector = detector;
+  }
+
   private get aspect(): number {
     return this.config.outputWidth / this.config.outputHeight;
   }
@@ -236,16 +263,23 @@ export class SimpleFaceEngine {
     this.detecting = true;
     try {
       const faces = await this.detector.detectFaces(this.source);
-      const nowMs = performance.now();
-      const { tracks } = this.tracker.update(faces, nowMs);
+      // Face gate (optional): mark which heads currently show a face, so the
+      // tracker can flag faceless heads "disengaged".
+      if (this.faceDetector) {
+        const faceBoxes = await this.faceDetector.detectFaceBoxes(this.source);
+        annotateFacePresence(faces, faceBoxes);
+      }
+      const { tracks } = this.tracker.update(faces);
 
       // Each confirmed track's crop box (16:9, sized from head size).
       const inputs: GroupInput[] = [];
       const lostById = new Map<number, boolean>();
+      const disengagedById = new Map<number, boolean>();
       for (const t of tracks) {
         const boxH = Math.max(1, t.size * this.config.cropPadding);
         inputs.push({ id: t.id, cx: t.cx, cy: t.cy, boxW: boxH * this.aspect, boxH });
         lostById.set(t.id, t.status === 'lost');
+        disengagedById.set(t.id, t.status !== 'lost' && t.disengaged);
       }
       const inputById = new Map(inputs.map((i) => [i.id, i]));
       const groups = this.groupManager.update(inputs);
@@ -253,11 +287,15 @@ export class SimpleFaceEngine {
 
       const scoreById = new Map(tracks.map((t) => [t.id, t.score]));
       this.callbacks.onStreamScores?.(
-        groups.map((g) => ({
-          id: g.groupId,
-          scores: g.memberIds.map((id) => scoreById.get(id) ?? 0),
-          lost: g.memberIds.every((id) => lostById.get(id) === true),
-        })),
+        groups.map((g) => {
+          const lost = g.memberIds.every((id) => lostById.get(id) === true);
+          return {
+            id: g.groupId,
+            scores: g.memberIds.map((id) => scoreById.get(id) ?? 0),
+            lost,
+            disengaged: !lost && g.memberIds.every((id) => disengagedById.get(id) === true),
+          };
+        }),
       );
 
       this.roundCounter += 1;
@@ -266,6 +304,7 @@ export class SimpleFaceEngine {
         detected: faces.length,
         faceCount: tracks.length,
         lost: tracks.filter((t) => t.status === 'lost').length,
+        disengaged: tracks.filter((t) => t.status !== 'lost' && t.disengaged).length,
         pending: this.tracker.pendingCount,
         groups: groups.length,
       });

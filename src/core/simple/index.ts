@@ -41,6 +41,19 @@ export {
 } from './yolov8HeadDetector';
 
 export {
+  annotateFacePresence,
+  type FaceBox,
+  type FacePresenceDetector,
+} from './faceDetector';
+
+export {
+  FaceApiFaceDetector,
+  DEFAULT_FACE_API_FACE_DETECTOR_CONFIG,
+  type FaceApiLike,
+  type FaceApiFaceDetectorConfig,
+} from './faceApiFaceDetector';
+
+export {
   computeLetterbox,
   mapDetectionToSource,
   decodeYolov8,

@@ -46,11 +46,14 @@
       .tile video { width: 320px; height: 180px; object-fit: cover; display: block; }
       .tile.lost { outline: 2px dashed #e0a800; }
       .tile.lost video { filter: grayscale(0.85) brightness(0.7); }
+      .tile.disengaged { outline: 2px dashed #4aa3df; }
+      .tile.disengaged video { filter: grayscale(0.85) brightness(0.7); }
       .tile-label {
         position: absolute; left: 6px; bottom: 6px; padding: 2px 8px; border-radius: 6px;
         font-size: 0.75rem; background: #000a; color: #fff;
       }
       .tile.lost .tile-label { background: #b8860baa; }
+      .tile.disengaged .tile-label { background: #2f6f9faa; }
     </style>
   </head>
   <body>
@@ -93,6 +96,27 @@
           <span id="mergeWidthLabel">9:9</span>
         </label>
         <span class="caption">streams merge when a head enters the inner X:9 core of another; split when it leaves the full 16:9 box</span>
+      </div>
+      <div class="row">
+        <strong>Lost duration:</strong>
+        <label class="interval-control">
+          <input id="lostRounds" type="range" min="1" max="10" step="1" value="4" />
+          <span id="lostRoundsLabel">4 detections</span>
+        </label>
+        <span class="caption">how many missed detections a lost stream is kept (greyed) before it drops</span>
+      </div>
+      <div class="row">
+        <strong>Disengagement:</strong>
+        <label class="interval-control">
+          <input id="disengageEnable" type="checkbox" />
+          detect (face check)
+        </label>
+        <label class="interval-control">
+          after
+          <input id="disengageRounds" type="range" min="1" max="100" step="1" value="10" />
+          <span id="disengageRoundsLabel">10 faceless detections</span>
+        </label>
+        <span class="caption">a detected head with no face for this many rounds is greyed as “disengaged” (loads a MobileNet face model)</span>
       </div>
       <div class="row">
         <strong>Score threshold:</strong>

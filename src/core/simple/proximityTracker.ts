@@ -7,12 +7,18 @@
  * until one side is empty. Then:
  *   - leftover detections  → new (pending) tracks,
  *   - leftover tracks      → a CONFIRMED track goes "lost" (keeps its stream
- *     and stays matchable for `lostSeconds` — hysteresis so a missed
- *     detection or two doesn't drop it); an UNCONFIRMED track is dropped.
+ *     and stays matchable for `lostRounds` successive missed detections —
+ *     hysteresis so a missed detection or two doesn't drop it); an UNCONFIRMED
+ *     track is dropped.
  *
  * A new track must be matched `minHits` rounds IN A ROW before it is
  * confirmed and gets a stream — this suppresses false positives. (Missing a
  * round drops an unconfirmed track, so the count really is consecutive.)
+ *
+ * Separately, a matched (still-detected) head whose observation carries no
+ * face for `disengageRounds` successive rounds is flagged `disengaged` — the
+ * head is there but turned away / not paying attention. It keeps its stream
+ * (greyed, like lost); the flag clears the moment a face is seen again.
  */
 
 export interface FaceObservation {
@@ -22,6 +28,11 @@ export interface FaceObservation {
   size: number;
   /** Detector confidence in [0, 1]. */
   score: number;
+  /**
+   * Whether a face was found inside this head this round. `undefined` when no
+   * face detector is running (disengagement disabled) — treated as "engaged".
+   */
+  hasFace?: boolean;
 }
 
 export interface SimpleTrack {
@@ -36,21 +47,35 @@ export interface SimpleTrack {
   /** True once `hits >= minHits`; only confirmed tracks are streamed. */
   confirmed: boolean;
   status: 'active' | 'lost';
-  lostSinceMs: number | null;
+  /** Successive missed-detection rounds while lost (0 when active). */
+  missedRounds: number;
+  /** Successive matched rounds with no face inside the head. */
+  faceMisses: number;
+  /** True once `faceMisses >= disengageRounds`; cleared when a face returns. */
+  disengaged: boolean;
 }
 
 export interface ProximityTrackerConfig {
   /** Consecutive detections a new track needs before it's confirmed/streamed. */
   minHits: number;
-  /** How long a lost (confirmed) track keeps its stream and stays matchable. */
-  lostSeconds: number;
+  /**
+   * How many successive missed detections a lost (confirmed) track keeps its
+   * stream and stays matchable before it's dropped.
+   */
+  lostRounds: number;
+  /**
+   * How many successive matched rounds with no face flip a head to
+   * `disengaged`. Only meaningful when observations carry `hasFace`.
+   */
+  disengageRounds: number;
   /** Optional cap on match distance (source px); `Infinity` = no cap. */
   maxMatchDistance: number;
 }
 
 export const DEFAULT_PROXIMITY_TRACKER_CONFIG: ProximityTrackerConfig = {
   minHits: 3,
-  lostSeconds: 5,
+  lostRounds: 4,
+  disengageRounds: 10,
   maxMatchDistance: Infinity,
 };
 
@@ -59,7 +84,7 @@ export interface ProximityUpdate {
   tracks: SimpleTrack[];
   /** Ids that became confirmed this round. */
   added: number[];
-  /** Confirmed ids dropped this round (lost longer than `lostSeconds`). */
+  /** Confirmed ids dropped this round (lost longer than `lostRounds`). */
   removed: number[];
 }
 
@@ -74,8 +99,14 @@ export class ProximityTracker {
     this.config = { ...DEFAULT_PROXIMITY_TRACKER_CONFIG, ...config };
   }
 
-  setLostSeconds(seconds: number): void {
-    this.config.lostSeconds = Math.max(0, seconds);
+  /** Successive missed detections a lost stream survives (≥ 1); live. */
+  setLostRounds(rounds: number): void {
+    this.config.lostRounds = Math.max(1, Math.round(rounds));
+  }
+
+  /** Successive faceless rounds before a head is flagged disengaged (≥ 1); live. */
+  setDisengageRounds(rounds: number): void {
+    this.config.disengageRounds = Math.max(1, Math.round(rounds));
   }
 
   /** Confirmed faces held (active + lost within hysteresis). */
@@ -88,7 +119,7 @@ export class ProximityTracker {
     return this.tracks.filter((t) => !t.confirmed).length;
   }
 
-  update(observations: FaceObservation[], nowMs: number): ProximityUpdate {
+  update(observations: FaceObservation[]): ProximityUpdate {
     const existing = this.tracks;
     const confirmedBefore = new Set(existing.filter((t) => t.confirmed).map((t) => t.id));
     const trackUsed = new Array<boolean>(existing.length).fill(false);
@@ -118,7 +149,6 @@ export class ProximityTracker {
 
     // Leftover tracks: confirmed → lost hysteresis; unconfirmed → dropped.
     const survivors: SimpleTrack[] = [];
-    const lostLimitMs = this.config.lostSeconds * 1000;
     for (let ti = 0; ti < existing.length; ti += 1) {
       const track = existing[ti];
       if (trackUsed[ti]) {
@@ -126,11 +156,9 @@ export class ProximityTracker {
         continue;
       }
       if (!track.confirmed) continue; // drop unconfirmed on a miss (resets the streak)
-      if (track.status !== 'lost') {
-        track.status = 'lost';
-        track.lostSinceMs = nowMs;
-      }
-      if (nowMs - (track.lostSinceMs ?? nowMs) <= lostLimitMs) survivors.push(track);
+      track.status = 'lost';
+      track.missedRounds += 1;
+      if (track.missedRounds <= this.config.lostRounds) survivors.push(track);
     }
 
     this.tracks = [...survivors, ...born];
@@ -149,8 +177,21 @@ export class ProximityTracker {
     track.score = obs.score;
     track.hits += 1;
     track.status = 'active';
-    track.lostSinceMs = null;
+    track.missedRounds = 0;
+    this.updateFaceGate(track, obs);
     if (!track.confirmed && track.hits >= this.config.minHits) track.confirmed = true;
+  }
+
+  /** Update the disengagement streak from this round's face presence. */
+  private updateFaceGate(track: SimpleTrack, obs: FaceObservation): void {
+    if (obs.hasFace === false) {
+      track.faceMisses += 1;
+      if (track.faceMisses >= this.config.disengageRounds) track.disengaged = true;
+    } else {
+      // A face is present, or no face detector is running (hasFace undefined).
+      track.faceMisses = 0;
+      track.disengaged = false;
+    }
   }
 
   private birth(obs: FaceObservation): SimpleTrack {
@@ -165,7 +206,9 @@ export class ProximityTracker {
       hits: 1,
       confirmed: this.config.minHits <= 1,
       status: 'active',
-      lostSinceMs: null,
+      missedRounds: 0,
+      faceMisses: obs.hasFace === false ? 1 : 0,
+      disengaged: false,
     };
   }
 }

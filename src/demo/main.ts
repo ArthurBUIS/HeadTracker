@@ -9,10 +9,15 @@
  */
 
 import * as ort from 'onnxruntime-web';
+import * as tf from '@tensorflow/tfjs';
+// The **nobundle** face-api build imports the app's external @tensorflow/tfjs
+// instead of inlining its own, so it shares this one tfjs engine.
+import * as faceapi from '@vladmandic/face-api/dist/face-api.esm-nobundle.js';
 
 import {
   SimpleFaceEngine,
   Yolov8HeadDetector,
+  FaceApiFaceDetector,
   type Yolov8Runner,
   type SimpleFaceCallbacks,
 } from '../core/simple';
@@ -23,6 +28,9 @@ ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.27.0/di
 
 /** YOLOv8 square input side. Standard Ultralytics export is 640. */
 const YOLO_INPUT_SIZE = 640;
+
+// face-api hosts the SsdMobilenetv1 (MobileNet-SSD face) weights under /model.
+const FACE_MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model';
 
 const statusEl = document.getElementById('status') as HTMLElement;
 const debugEl = document.getElementById('debug') as HTMLElement;
@@ -44,6 +52,11 @@ const mergeWidthInput = document.getElementById('mergeWidth') as HTMLInputElemen
 const mergeWidthLabel = document.getElementById('mergeWidthLabel') as HTMLElement;
 const scoreThresholdInput = document.getElementById('scoreThreshold') as HTMLInputElement;
 const scoreThresholdLabel = document.getElementById('scoreThresholdLabel') as HTMLElement;
+const lostRoundsInput = document.getElementById('lostRounds') as HTMLInputElement;
+const lostRoundsLabel = document.getElementById('lostRoundsLabel') as HTMLElement;
+const disengageEnable = document.getElementById('disengageEnable') as HTMLInputElement;
+const disengageRoundsInput = document.getElementById('disengageRounds') as HTMLInputElement;
+const disengageRoundsLabel = document.getElementById('disengageRoundsLabel') as HTMLElement;
 const videoSpeedInput = document.getElementById('videoSpeed') as HTMLInputElement;
 const videoSpeedLabel = document.getElementById('videoSpeedLabel') as HTMLElement;
 
@@ -57,7 +70,14 @@ let detectionIntervalMs = Number(intervalInput.value);
 let cropPadding = Number(cropSizeInput.value);
 let mergeWidthUnits = Number(mergeWidthInput.value);
 let confThreshold = Number(scoreThresholdInput.value) / 100;
+let lostRounds = Number(lostRoundsInput.value);
+let disengageRounds = Number(disengageRoundsInput.value);
 let videoSpeed = Number(videoSpeedInput.value);
+
+// face-api face detector for the disengagement gate — loaded lazily the first
+// time it's enabled, then reused.
+let faceDetector: FaceApiFaceDetector | null = null;
+let faceApiLoading: Promise<FaceApiFaceDetector> | null = null;
 
 function setStatus(text: string): void {
   statusEl.textContent = text;
@@ -113,6 +133,28 @@ async function ensureModelLoaded(): Promise<void> {
   headDetector = new Yolov8HeadDetector(runner, { confThreshold, numClasses });
 }
 
+/**
+ * Load the face-api SsdMobilenetv1 model once and build the face-presence
+ * detector for the disengagement gate. face-api runs on tfjs — force the
+ * webgl backend, the tested path (webgpu can hang its nets).
+ */
+async function ensureFaceDetector(): Promise<FaceApiFaceDetector> {
+  if (faceDetector) return faceDetector;
+  if (faceApiLoading) return faceApiLoading;
+  faceApiLoading = (async () => {
+    try {
+      await tf.setBackend('webgl');
+    } catch {
+      /* fall back to whatever backend is available */
+    }
+    await tf.ready();
+    await faceapi.nets.ssdMobilenetv1.loadFromUri(FACE_MODEL_URL);
+    faceDetector = new FaceApiFaceDetector(faceapi as unknown as ConstructorParameters<typeof FaceApiFaceDetector>[0]);
+    return faceDetector;
+  })();
+  return faceApiLoading;
+}
+
 function addTile(id: number, stream: MediaStream): void {
   const tile = document.createElement('div');
   tile.className = 'tile';
@@ -132,12 +174,17 @@ function addTile(id: number, stream: MediaStream): void {
 function setTileLost(id: number, lost: boolean): void {
   tileById.get(id)?.classList.toggle('lost', lost);
 }
-/** Set a tile's label with the score(s) of its member head(s). */
-function setTileScore(id: number, scores: number[], lost: boolean): void {
-  const label = tileById.get(id)?.querySelector('.tile-label');
+/** Set a tile's grey state + label from its status and member head score(s). */
+function setTileScore(id: number, scores: number[], lost: boolean, disengaged: boolean): void {
+  const tile = tileById.get(id);
+  if (!tile) return;
+  tile.classList.toggle('lost', lost);
+  tile.classList.toggle('disengaged', disengaged);
+  const label = tile.querySelector('.tile-label');
   if (!label) return;
   const pct = scores.map((s) => `${Math.round(s * 100)}%`).join(', ');
-  label.textContent = `stream #${id} · ${pct}${lost ? ' (lost)' : ''}`;
+  const status = lost ? ' (lost)' : disengaged ? ' (disengaged)' : '';
+  label.textContent = `stream #${id} · ${pct}${status}`;
 }
 function removeTile(id: number): void {
   tileById.get(id)?.remove();
@@ -169,12 +216,12 @@ function startEngineOnSource(): void {
     onFaceStreamResumed: (id) => setTileLost(id, false),
     onFaceStreamRemoved: (id) => removeTile(id),
     onStreamScores: (streams) => {
-      for (const s of streams) setTileScore(s.id, s.scores, s.lost);
+      for (const s of streams) setTileScore(s.id, s.scores, s.lost, s.disengaged);
     },
     onDiagnostics: (d) => {
       debugEl.textContent =
         `round ${d.round} · detected ${d.detected} · confirmed ${d.faceCount} ` +
-        `(${d.lost} lost, ${d.pending} pending) · streams ${d.groups}`;
+        `(${d.lost} lost, ${d.disengaged} disengaged, ${d.pending} pending) · streams ${d.groups}`;
     },
   };
   if (!headDetector) throw new Error('Model not loaded');
@@ -182,9 +229,17 @@ function startEngineOnSource(): void {
     detectionIntervalMs,
     cropPadding,
     grouping: { mergeWidthUnits },
+    tracker: { lostRounds, disengageRounds },
   });
   engine.start(sourceVideo);
   (window as unknown as { simpleEngine: SimpleFaceEngine }).simpleEngine = engine;
+  // Wire the disengagement face gate if it's enabled (loads the model once).
+  if (disengageEnable.checked) {
+    setStatus('Loading MobileNet face model for disengagement…');
+    ensureFaceDetector()
+      .then((fd) => engine?.setFaceDetector(fd))
+      .catch((err) => setStatus(`Face model load failed: ${err instanceof Error ? err.message : String(err)}`));
+  }
 }
 
 async function startWebcam(): Promise<void> {
@@ -264,6 +319,37 @@ scoreThresholdInput.addEventListener('input', () => {
   confThreshold = Number(scoreThresholdInput.value) / 100;
   scoreThresholdLabel.textContent = `${scoreThresholdInput.value}%`;
   headDetector?.setConfThreshold(confThreshold);
+});
+
+lostRoundsLabel.textContent = `${lostRounds} detection${lostRounds === 1 ? '' : 's'}`;
+lostRoundsInput.addEventListener('input', () => {
+  lostRounds = Number(lostRoundsInput.value);
+  lostRoundsLabel.textContent = `${lostRounds} detection${lostRounds === 1 ? '' : 's'}`;
+  engine?.setLostRounds(lostRounds);
+});
+
+disengageRoundsLabel.textContent = `${disengageRounds} faceless detections`;
+disengageRoundsInput.addEventListener('input', () => {
+  disengageRounds = Number(disengageRoundsInput.value);
+  disengageRoundsLabel.textContent = `${disengageRounds} faceless detection${disengageRounds === 1 ? '' : 's'}`;
+  engine?.setDisengageRounds(disengageRounds);
+});
+
+disengageEnable.addEventListener('change', () => {
+  if (!engine) return;
+  if (disengageEnable.checked) {
+    setStatus('Loading MobileNet face model for disengagement…');
+    ensureFaceDetector()
+      .then((fd) => {
+        engine?.setFaceDetector(fd);
+        setStatus('Disengagement detection on.');
+      })
+      .catch((err) => setStatus(`Face model load failed: ${err instanceof Error ? err.message : String(err)}`));
+  } else {
+    engine.setFaceDetector(null);
+    // Clear any lingering disengaged styling on the tiles.
+    for (const tile of tileById.values()) tile.classList.remove('disengaged');
+  }
 });
 
 videoSpeedLabel.textContent = `×${videoSpeed.toFixed(1)}`;
