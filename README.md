@@ -119,6 +119,27 @@ All controls apply **live** — adjust them while it's running.
 | **Score threshold** (0–100%, default 60) | Detections below this confidence are ignored. Raise it if you get spurious boxes; lower it if real heads are missed. |
 | **Video speed** (×0.1–×1, default ×0.5) | Slows a loaded video down, handy for watching the tracking behave frame by frame. |
 
+### How each stream stays locked to one head
+
+The tracker tells people apart by **position, not faces** — there's no facial
+recognition deciding who's who. A few times per second it gets a fresh set of
+head positions and matches them to the streams it already has by **nearest
+distance**: it considers every possible pairing of an existing stream to a new
+detection, locks in the closest pair first, then the next closest, and so on
+until everything is matched. Because a head barely moves in the fraction of a
+second between rounds, each head's new position is overwhelmingly the nearest
+match to its *own* stream — so that stream stays attached to the same person and
+keeps its number. A detection that matches no existing stream starts a new one
+(after the three-in-a-row confirmation below), and a stream that matches nothing
+this round is **held for a moment** (Lost duration) instead of being reassigned,
+so a single missed detection never hands a person's stream to someone else.
+
+The one situation that can fool a position-based tracker is two heads passing
+through almost the same spot at the same instant — there, "nearest" is ambiguous
+and the two streams could swap. That's exactly what the **merge** feature guards
+against: when heads get that close their streams combine into one (framing both)
+rather than risk a swap, and split back apart cleanly once the people separate.
+
 <a id="what-youll-see-happen"></a>
 ### What you'll see happen
 
