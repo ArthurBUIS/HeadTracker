@@ -41,34 +41,47 @@ works in other browsers via CPU, just slower.
 
 HeadTracker doesn't bundle a model — you load one yourself (so you can swap in
 a better one anytime). The recommended one is **`nano.onnx`**: a small, fast
-YOLOv8 head detector that runs on any machine. Models are not committed to the
-repo (they're big and gitignored).
+YOLOv8 head detector. Models aren't committed to this repo (they're large), so
+you make it in two short steps: **download the weights, then convert them to
+ONNX.** You only do this once.
 
-**How to get `nano.onnx`:**
+### Step 1 — Download the head-detection weights (`nano.pt`)
 
-1. **Easiest — ask Arthur for the file.** It's ~12 MB; grab it from the shared
-   drive / Slack and keep it somewhere handy. Then load it in the demo (see
-   below). Done.
+The weights are published on GitHub:
+[**Abcfsa/YOLOv8_head_detector**](https://github.com/Abcfsa/YOLOv8_head_detector)
+(a YOLOv8 model trained to detect heads, on the SCUT-HEAD dataset). It offers
+two files in the repo root — `nano.pt` (small and fast) and `medium.pt` (larger,
+more accurate). Get `nano.pt` either way:
 
-2. **Or make it yourself** from the YOLOv8-head weights (`nano.pt`, also from
-   Arthur). Export it to ONNX once with [Ultralytics](https://docs.ultralytics.com):
+- **In the browser:** open the repo, click `nano.pt`, then click the **Download**
+  button (the ⤓ icon).
+- **Or from a terminal:**
 
-   ```bash
-   pip install ultralytics
-   yolo export model=nano.pt format=onnx imgsz=640 opset=12 simplify=True
-   ```
+  ```bash
+  curl -L -o nano.pt https://github.com/Abcfsa/YOLOv8_head_detector/raw/main/nano.pt
+  ```
 
-   That writes `nano.onnx` next to the `.pt`. This is exactly how the file in
-   use was produced — any standard Ultralytics YOLOv8 **detection** export
-   (input `[1,3,640,640]`, output `[1,4+classes,8400]`) works, so you can point
-   it at a different head model the same way.
+### Step 2 — Convert `nano.pt` to `nano.onnx`
 
-There's also a **`medium.onnx`** (~99 MB, more accurate, wants a bit more GPU)
-and a **YOLOE** option — an open-vocabulary model exported with the text prompt
-"head". For YOLOE, pick *YOLOE segmentation — 1-class "head"* in the format
-dropdown when you load it.
+The browser runs ONNX models, so convert the `.pt` once with
+[Ultralytics](https://docs.ultralytics.com) (needs Python 3 + `pip`):
 
-The first time you load any model the browser spends a few seconds compiling it
+```bash
+pip install ultralytics
+yolo export model=nano.pt format=onnx imgsz=640 opset=12 simplify=True
+```
+
+That writes **`nano.onnx`** next to `nano.pt`. That's the file you load in the
+demo. (Same steps produce `medium.onnx` from `medium.pt` if you want more
+accuracy at the cost of a bigger download and a bit more GPU.)
+
+> Any standard Ultralytics YOLOv8 **detection** export works here (input
+> `[1,3,640,640]`, output `[1,4+classes,8400]`), so you can convert a different
+> head model the same way. There's also a **YOLOE** option — an open-vocabulary
+> model exported with the text prompt "head"; for that one, pick *YOLOE
+> segmentation — 1-class "head"* in the demo's format dropdown.
+
+The first time you load any model, the browser spends a few seconds compiling it
 (you'll see it "think"); after that it's fast.
 
 ---
